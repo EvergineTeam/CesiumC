@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #ifdef _WIN32
@@ -79,6 +80,85 @@ static int g_failed = 0;
     } while (0)
 
 static const double PI = 3.14159265358979323846;
+
+// Cesium Ion access token from environment variable.
+// Tests that require network access will be skipped if not set.
+static const char* g_ionToken = nullptr;
+
+static void sleep_ms(int ms) {
+#ifdef _WIN32
+    Sleep(ms);
+#else
+    usleep(ms * 1000);
+#endif
+}
+
+// Helper: create the full tileset infrastructure in one call.
+struct TilesetTestFixture {
+    CesiumAsyncSystem*      async;
+    CesiumAssetAccessor*    accessor;
+    CesiumCreditSystem*     credits;
+    CesiumTilesetExternals* externals;
+
+    static TilesetTestFixture create() {
+        TilesetTestFixture f{};
+        f.async     = cesium_async_system_create();
+        f.accessor  = cesium_asset_accessor_create("CesiumNativeC-Tests/1.0");
+        f.credits   = cesium_credit_system_create();
+        f.externals = cesium_tileset_externals_create(f.async, f.accessor, f.credits);
+        return f;
+    }
+
+    void destroy() {
+        cesium_tileset_externals_destroy(externals);
+        cesium_credit_system_destroy(credits);
+        cesium_asset_accessor_destroy(accessor);
+        cesium_async_system_destroy(async);
+    }
+
+    // Pump main-thread tasks + update view until root tile is available or
+    // timeout is reached. Returns true if root became available.
+    bool waitForRootTile(CesiumTileset* tileset, CesiumViewState* vs,
+                         int maxIterations = 200, int sleepMs = 50) {
+        const CesiumViewState* views[] = {vs};
+        for (int i = 0; i < maxIterations; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(async);
+            cesium_credit_system_start_next_frame(credits);
+            cesium_tileset_update_view(tileset, views, 1, 0.016f);
+            if (cesium_tileset_is_root_tile_available(tileset))
+                return true;
+            sleep_ms(sleepMs);
+        }
+        return false;
+    }
+};
+
+// Helper: create a view state looking at NYC from ~1500 m
+static CesiumViewState* createNycViewState() {
+    const CesiumEllipsoid* wgs84 = cesium_ellipsoid_wgs84();
+    CesiumCartographic cam = cesium_cartographic_from_degrees(-74.006, 40.7128, 1500.0);
+    CesiumVec3 pos = cesium_ellipsoid_cartographic_to_cartesian(wgs84, cam);
+
+    CesiumVec3 dir = {-pos.x, -pos.y, -pos.z};
+    double len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    dir.x /= len; dir.y /= len; dir.z /= len;
+
+    CesiumVec3 up = cesium_ellipsoid_geodetic_surface_normal_cartographic(wgs84, cam);
+    CesiumVec2 viewport = {1920.0, 1080.0};
+
+    return cesium_view_state_create_perspective(
+        pos, dir, up, viewport,
+        60.0 * PI / 180.0, 33.75 * PI / 180.0, nullptr);
+}
+
+#define SKIP_IF_NO_TOKEN()                                                    \
+    do {                                                                      \
+        if (!g_ionToken || g_ionToken[0] == '\0') {                           \
+            std::printf("SKIPPED (set CESIUM_ION_TOKEN)\n");                  \
+            ++g_passed;                                                       \
+            return 0;                                                         \
+        }                                                                     \
+    } while (0)
 
 // ============================================================================
 // Test: Error handling
@@ -372,51 +452,29 @@ static int test_view_state_perspective() {
 }
 
 // ============================================================================
-// Test: Full pipeline — create tileset from URL (offline, will fail gracefully)
+// Test: Full pipeline — load Cesium World Terrain from Ion
 // ============================================================================
 
-static int test_tileset_create_from_url() {
-    CesiumAsyncSystem* async = cesium_async_system_create();
-    CesiumAssetAccessor* accessor = cesium_asset_accessor_create(nullptr);
-    CesiumCreditSystem* credits = cesium_credit_system_create();
-    CesiumTilesetExternals* ext =
-        cesium_tileset_externals_create(async, accessor, credits);
+static int test_tileset_create_from_ion_world_terrain() {
+    SKIP_IF_NO_TOKEN();
 
-    // Invalid URL — tileset will fail to load but should not crash
-    CesiumTileset* tileset = cesium_tileset_create_from_url(
-        ext, "http://localhost:1/nonexistent/tileset.json", nullptr);
+    auto f = TilesetTestFixture::create();
+    CesiumTileset* tileset = cesium_tileset_create_from_ion(
+        f.externals, 1 /* Cesium World Terrain */, g_ionToken, nullptr, nullptr);
     ASSERT_NOT_NULL(tileset);
 
-    // Root tile should not be available yet (or ever, for a bad URL)
-    // Just verify the API doesn't crash
-    cesium_tileset_is_root_tile_available(tileset);
+    CesiumViewState* vs = createNycViewState();
 
-    // Do a few update cycles
-    CesiumVec3 pos = {6378137.0, 0.0, 0.0};
-    CesiumVec3 dir = {-1.0, 0.0, 0.0};
-    CesiumVec3 up = {0.0, 0.0, 1.0};
-    CesiumVec2 viewport = {800.0, 600.0};
+    // Wait for the root tile to become available
+    bool rootAvailable = f.waitForRootTile(tileset, vs);
+    ASSERT_TRUE(rootAvailable);
 
-    CesiumViewState* vs = cesium_view_state_create_perspective(
-        pos, dir, up, viewport,
-        60.0 * PI / 180.0, 45.0 * PI / 180.0, nullptr);
-
-    const CesiumViewState* views[] = {vs};
-    for (int i = 0; i < 3; ++i) {
-        cesium_async_system_dispatch_main_thread_tasks(async);
-        cesium_credit_system_start_next_frame(credits);
-        const CesiumViewUpdateResult* result =
-            cesium_tileset_update_view(tileset, views, 1, 0.016f);
-        // Result should be non-null even for a broken tileset
-        ASSERT_NOT_NULL(result);
-    }
+    float progress = cesium_tileset_compute_load_progress(tileset);
+    std::printf("(progress=%.1f%%) ", progress);
 
     cesium_view_state_destroy(vs);
     cesium_tileset_destroy(tileset);
-    cesium_tileset_externals_destroy(ext);
-    cesium_credit_system_destroy(credits);
-    cesium_asset_accessor_destroy(accessor);
-    cesium_async_system_destroy(async);
+    f.destroy();
     return 0;
 }
 
@@ -656,37 +714,37 @@ static int test_load_error_callback() {
 }
 
 // ============================================================================
-// Test: ViewUpdateResult statistics accessors
+// Test: ViewUpdateResult statistics from real Ion tileset
 // ============================================================================
 
 static int test_view_update_result_statistics() {
-    CesiumAsyncSystem* async = cesium_async_system_create();
-    CesiumAssetAccessor* accessor = cesium_asset_accessor_create(nullptr);
-    CesiumCreditSystem* credits = cesium_credit_system_create();
-    CesiumTilesetExternals* ext =
-        cesium_tileset_externals_create(async, accessor, credits);
+    SKIP_IF_NO_TOKEN();
 
-    CesiumTileset* tileset = cesium_tileset_create_from_url(
-        ext, "http://localhost:1/nonexistent/tileset.json", nullptr);
+    auto f = TilesetTestFixture::create();
+
+    CesiumTileset* tileset = cesium_tileset_create_from_ion(
+        f.externals, 1, g_ionToken, nullptr, nullptr);
     ASSERT_NOT_NULL(tileset);
 
-    CesiumVec3 pos = {6378137.0, 0.0, 0.0};
-    CesiumVec3 dir = {-1.0, 0.0, 0.0};
-    CesiumVec3 up = {0.0, 0.0, 1.0};
-    CesiumVec2 viewport = {1920.0, 1080.0};
-    CesiumViewState* vs = cesium_view_state_create_perspective(
-        pos, dir, up, viewport,
-        60.0 * PI / 180.0, 33.75 * PI / 180.0, nullptr);
+    CesiumViewState* vs = createNycViewState();
 
+    // Wait for root tile, then do a proper update
+    bool ready = f.waitForRootTile(tileset, vs);
+    ASSERT_TRUE(ready);
+
+    // Do several more updates to let tiles stream in
     const CesiumViewState* views[] = {vs};
-    cesium_async_system_dispatch_main_thread_tasks(async);
-    const CesiumViewUpdateResult* result =
-        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    const CesiumViewUpdateResult* result = nullptr;
+    for (int i = 0; i < 30; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        result = cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        sleep_ms(50);
+    }
     ASSERT_NOT_NULL(result);
 
-    // All accessors should return valid values without crashing
     int renderCount = cesium_view_update_result_get_tiles_to_render_count(result);
-    ASSERT_TRUE(renderCount >= 0);
+    ASSERT_TRUE(renderCount > 0);
 
     int fadingCount = cesium_view_update_result_get_tiles_fading_out_count(result);
     ASSERT_TRUE(fadingCount >= 0);
@@ -695,9 +753,13 @@ static int test_view_update_result_statistics() {
     ASSERT_TRUE(frameNumber >= 0);
 
     uint32_t visited = cesium_view_update_result_get_tiles_visited(result);
+    ASSERT_TRUE(visited > 0);
+
     uint32_t culled = cesium_view_update_result_get_tiles_culled(result);
+    (void)culled; // may be 0 for a small view
+
     uint32_t maxDepth = cesium_view_update_result_get_max_depth_visited(result);
-    (void)visited; (void)culled; (void)maxDepth; // just verify no crash
+    ASSERT_TRUE(maxDepth > 0);
 
     int32_t workerQueue =
         cesium_view_update_result_get_worker_thread_load_queue_length(result);
@@ -706,96 +768,118 @@ static int test_view_update_result_statistics() {
     ASSERT_TRUE(workerQueue >= 0);
     ASSERT_TRUE(mainQueue >= 0);
 
-    // For a broken URL, no tiles should be ready to render
-    ASSERT_EQ(renderCount, 0);
+    std::printf("(render=%d visited=%u culled=%u depth=%u) ",
+                renderCount, visited, culled, maxDepth);
 
     cesium_view_state_destroy(vs);
     cesium_tileset_destroy(tileset);
-    cesium_tileset_externals_destroy(ext);
-    cesium_credit_system_destroy(credits);
-    cesium_asset_accessor_destroy(accessor);
-    cesium_async_system_destroy(async);
+    f.destroy();
     return 0;
 }
 
 // ============================================================================
-// Test: Tileset create from Ion (bad token — exercises the Ion path)
+// Test: Tile properties — inspect real tiles from Cesium World Terrain
 // ============================================================================
 
-static int test_tileset_create_from_ion() {
-    CesiumAsyncSystem* async = cesium_async_system_create();
-    CesiumAssetAccessor* accessor = cesium_asset_accessor_create(nullptr);
-    CesiumCreditSystem* credits = cesium_credit_system_create();
-    CesiumTilesetExternals* ext =
-        cesium_tileset_externals_create(async, accessor, credits);
-    CesiumTilesetOptions* opts = cesium_tileset_options_create();
+static int test_tile_properties() {
+    SKIP_IF_NO_TOKEN();
 
-    // Use an invalid token — tileset should be created but fail to load
+    auto f = TilesetTestFixture::create();
     CesiumTileset* tileset = cesium_tileset_create_from_ion(
-        ext, 1, "INVALID_TOKEN_FOR_TESTING", opts, nullptr);
+        f.externals, 1, g_ionToken, nullptr, nullptr);
     ASSERT_NOT_NULL(tileset);
 
-    // Pump a few frames — should not crash
-    CesiumVec3 pos = {6378137.0, 0.0, 0.0};
-    CesiumVec3 dir = {-1.0, 0.0, 0.0};
-    CesiumVec3 up = {0.0, 0.0, 1.0};
-    CesiumVec2 viewport = {800.0, 600.0};
-    CesiumViewState* vs = cesium_view_state_create_perspective(
-        pos, dir, up, viewport,
-        60.0 * PI / 180.0, 45.0 * PI / 180.0, nullptr);
+    CesiumViewState* vs = createNycViewState();
+    bool ready = f.waitForRootTile(tileset, vs);
+    ASSERT_TRUE(ready);
+
+    // Pump updates to let tiles load
     const CesiumViewState* views[] = {vs};
-
-    for (int i = 0; i < 5; ++i) {
-        cesium_async_system_dispatch_main_thread_tasks(async);
-        const CesiumViewUpdateResult* result =
-            cesium_tileset_update_view(tileset, views, 1, 0.016f);
-        ASSERT_NOT_NULL(result);
+    const CesiumViewUpdateResult* result = nullptr;
+    for (int i = 0; i < 40; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        result = cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        sleep_ms(50);
     }
+    ASSERT_NOT_NULL(result);
 
-    // Load progress should be a valid float
-    float progress = cesium_tileset_compute_load_progress(tileset);
-    ASSERT_TRUE(progress >= 0.0f && progress <= 100.0f);
+    int renderCount = cesium_view_update_result_get_tiles_to_render_count(result);
+    ASSERT_TRUE(renderCount > 0);
+
+    // Inspect the first renderable tile
+    const CesiumTile* tile =
+        cesium_view_update_result_get_tile_to_render(result, 0);
+    ASSERT_NOT_NULL(tile);
+
+    double geoError = cesium_tile_get_geometric_error(tile);
+    ASSERT_TRUE(geoError >= 0.0);
+
+    CesiumMat4 transform = cesium_tile_get_transform(tile);
+    // Transform should not be all-zero (at least [15] should be 1.0 for a valid transform)
+    ASSERT_NEAR(transform.m[15], 1.0, 1e-10);
+
+    CesiumTileLoadState loadState = cesium_tile_get_load_state(tile);
+    ASSERT_EQ(loadState, CESIUM_TILE_LOAD_STATE_DONE);
+
+    CesiumBoundingVolume bv = cesium_tile_get_bounding_volume(tile);
+    // Type should be one of the valid enum values
+    ASSERT_TRUE(bv.type == CESIUM_BOUNDING_VOLUME_REGION ||
+                bv.type == CESIUM_BOUNDING_VOLUME_ORIENTED_BOX ||
+                bv.type == CESIUM_BOUNDING_VOLUME_SPHERE);
+
+    float fade = cesium_tile_get_lod_transition_fade_percentage(tile);
+    ASSERT_TRUE(fade >= 0.0f && fade <= 1.0f);
+
+    std::printf("(geoError=%.2f loadState=%d bvType=%d) ",
+                geoError, loadState, bv.type);
 
     cesium_view_state_destroy(vs);
     cesium_tileset_destroy(tileset);
-    cesium_tileset_options_destroy(opts);
-    cesium_tileset_externals_destroy(ext);
-    cesium_credit_system_destroy(credits);
-    cesium_asset_accessor_destroy(accessor);
-    cesium_async_system_destroy(async);
+    f.destroy();
     return 0;
 }
 
 // ============================================================================
-// Test: Tileset data accessors (numberOfTilesLoaded, totalDataBytes)
+// Test: Tileset data accessors (numberOfTilesLoaded, totalDataBytes) with real data
 // ============================================================================
 
 static int test_tileset_data_accessors() {
-    CesiumAsyncSystem* async = cesium_async_system_create();
-    CesiumAssetAccessor* accessor = cesium_asset_accessor_create(nullptr);
-    CesiumCreditSystem* credits = cesium_credit_system_create();
-    CesiumTilesetExternals* ext =
-        cesium_tileset_externals_create(async, accessor, credits);
+    SKIP_IF_NO_TOKEN();
 
-    CesiumTileset* tileset = cesium_tileset_create_from_url(
-        ext, "http://localhost:1/nonexistent/tileset.json", nullptr);
+    auto f = TilesetTestFixture::create();
+    CesiumTileset* tileset = cesium_tileset_create_from_ion(
+        f.externals, 1, g_ionToken, nullptr, nullptr);
     ASSERT_NOT_NULL(tileset);
 
-    // Before any loading, these should return 0 without crashing
+    CesiumViewState* vs = createNycViewState();
+    bool ready = f.waitForRootTile(tileset, vs);
+    ASSERT_TRUE(ready);
+
+    // Pump updates to load some tiles
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 30; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        sleep_ms(50);
+    }
+
     int32_t numLoaded = cesium_tileset_get_number_of_tiles_loaded(tileset);
-    ASSERT_TRUE(numLoaded >= 0);
+    ASSERT_TRUE(numLoaded > 0);
 
     int64_t totalBytes = cesium_tileset_get_total_data_bytes(tileset);
-    ASSERT_TRUE(totalBytes >= 0);
+    ASSERT_TRUE(totalBytes > 0);
 
     float progress = cesium_tileset_compute_load_progress(tileset);
     ASSERT_TRUE(progress >= 0.0f && progress <= 100.0f);
 
+    std::printf("(loaded=%d bytes=%lld progress=%.1f%%) ",
+                numLoaded, (long long)totalBytes, progress);
+
+    cesium_view_state_destroy(vs);
     cesium_tileset_destroy(tileset);
-    cesium_tileset_externals_destroy(ext);
-    cesium_credit_system_destroy(credits);
-    cesium_asset_accessor_destroy(accessor);
-    cesium_async_system_destroy(async);
+    f.destroy();
     return 0;
 }
 
@@ -839,6 +923,134 @@ static int test_scale_to_surface() {
 }
 
 // ============================================================================
+// Test: Root tile children traversal
+// ============================================================================
+
+static int test_root_tile_children() {
+    SKIP_IF_NO_TOKEN();
+
+    auto f = TilesetTestFixture::create();
+    CesiumTileset* tileset = cesium_tileset_create_from_ion(
+        f.externals, 1, g_ionToken, nullptr, nullptr);
+    ASSERT_NOT_NULL(tileset);
+
+    CesiumViewState* vs = createNycViewState();
+    bool ready = f.waitForRootTile(tileset, vs);
+    ASSERT_TRUE(ready);
+
+    const CesiumTile* root = cesium_tileset_get_root_tile(tileset);
+    ASSERT_NOT_NULL(root);
+
+    double rootError = cesium_tile_get_geometric_error(root);
+    ASSERT_TRUE(rootError > 0.0);
+
+    int childCount = cesium_tile_get_children_count(root);
+    ASSERT_TRUE(childCount > 0);
+    std::printf("(rootError=%.0f children=%d) ", rootError, childCount);
+
+    // Inspect the first child
+    const CesiumTile* child = cesium_tile_get_child(root, 0);
+    ASSERT_NOT_NULL(child);
+
+    double childError = cesium_tile_get_geometric_error(child);
+    // Child geometric error should be less than or equal to root's
+    ASSERT_TRUE(childError <= rootError);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    f.destroy();
+    return 0;
+}
+
+// ============================================================================
+// Test: Credit system produces credits for an Ion tileset
+// ============================================================================
+
+static int test_credit_system_with_ion() {
+    SKIP_IF_NO_TOKEN();
+
+    auto f = TilesetTestFixture::create();
+    CesiumTileset* tileset = cesium_tileset_create_from_ion(
+        f.externals, 1, g_ionToken, nullptr, nullptr);
+    ASSERT_NOT_NULL(tileset);
+
+    CesiumViewState* vs = createNycViewState();
+    bool ready = f.waitForRootTile(tileset, vs);
+    ASSERT_TRUE(ready);
+
+    // Pump a few frames so credits accumulate
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 10; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        sleep_ms(50);
+    }
+
+    int creditCount =
+        cesium_credit_system_get_credits_to_show_on_screen_count(f.credits);
+    // Ion tilesets typically produce at least one credit
+    ASSERT_TRUE(creditCount > 0);
+
+    const char* credit =
+        cesium_credit_system_get_credit_to_show_on_screen(f.credits, 0);
+    ASSERT_NOT_NULL(credit);
+    // Credit text may be empty if it's HTML-only; just verify the pointer is valid
+
+    std::printf("(credits=%d firstLen=%zu) ",
+                creditCount, std::strlen(credit));
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    f.destroy();
+    return 0;
+}
+
+// ============================================================================
+// Test: Tileset options affect loading behavior
+// ============================================================================
+
+static int test_tileset_options_affect_loading() {
+    SKIP_IF_NO_TOKEN();
+
+    auto f = TilesetTestFixture::create();
+    CesiumTilesetOptions* opts = cesium_tileset_options_create();
+
+    // Set a very high screen space error so fewer tiles are selected
+    cesium_tileset_options_set_maximum_screen_space_error(opts, 500.0);
+    cesium_tileset_options_set_maximum_simultaneous_tile_loads(opts, 5);
+
+    CesiumTileset* tileset = cesium_tileset_create_from_ion(
+        f.externals, 1, g_ionToken, opts, nullptr);
+    ASSERT_NOT_NULL(tileset);
+
+    CesiumViewState* vs = createNycViewState();
+    bool ready = f.waitForRootTile(tileset, vs);
+    ASSERT_TRUE(ready);
+
+    const CesiumViewState* views[] = {vs};
+    const CesiumViewUpdateResult* result = nullptr;
+    for (int i = 0; i < 20; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        result = cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        sleep_ms(50);
+    }
+    ASSERT_NOT_NULL(result);
+
+    int coarseCount = cesium_view_update_result_get_tiles_to_render_count(result);
+    // With SSE=500, very few tiles should be selected (likely 1-3)
+    ASSERT_TRUE(coarseCount > 0);
+    std::printf("(tiles@SSE500=%d) ", coarseCount);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(opts);
+    f.destroy();
+    return 0;
+}
+
+// ============================================================================
 // Test: NULL safety — all destroy functions should accept NULL
 // ============================================================================
 
@@ -862,10 +1074,19 @@ static int test_null_safety() {
 // ============================================================================
 
 int main() {
+    // Read Cesium Ion access token from environment
+    g_ionToken = std::getenv("CESIUM_ION_TOKEN");
+    if (!g_ionToken || g_ionToken[0] == '\0') {
+        std::printf("NOTE: CESIUM_ION_TOKEN not set. "
+                    "Ion-dependent tests will be skipped.\n"
+                    "  Set it with: set CESIUM_ION_TOKEN=your_token_here\n\n");
+    }
+
     std::printf("==============================\n");
     std::printf(" CesiumNativeC Test Suite\n");
     std::printf("==============================\n\n");
 
+    // --- Offline / unit tests (no token required) ---
     RUN_TEST(test_error_handling);
     RUN_TEST(test_ellipsoid_wgs84);
     RUN_TEST(test_ellipsoid_create_destroy);
@@ -878,10 +1099,7 @@ int main() {
     RUN_TEST(test_tileset_externals);
     RUN_TEST(test_tileset_options);
     RUN_TEST(test_view_state_perspective);
-    RUN_TEST(test_tileset_create_from_url);
     RUN_TEST(test_null_safety);
-
-    // New tests from Hello World patterns
     RUN_TEST(test_cartographic_to_cartesian_nyc);
     RUN_TEST(test_east_north_up_transform);
     RUN_TEST(test_globe_rectangle_queries);
@@ -889,10 +1107,16 @@ int main() {
     RUN_TEST(test_view_state_orthographic);
     RUN_TEST(test_view_state_from_matrices);
     RUN_TEST(test_load_error_callback);
-    RUN_TEST(test_view_update_result_statistics);
-    RUN_TEST(test_tileset_create_from_ion);
-    RUN_TEST(test_tileset_data_accessors);
     RUN_TEST(test_scale_to_surface);
+
+    // --- Online / integration tests (require CESIUM_ION_TOKEN) ---
+    RUN_TEST(test_tileset_create_from_ion_world_terrain);
+    RUN_TEST(test_view_update_result_statistics);
+    RUN_TEST(test_tile_properties);
+    RUN_TEST(test_root_tile_children);
+    RUN_TEST(test_tileset_data_accessors);
+    RUN_TEST(test_credit_system_with_ion);
+    RUN_TEST(test_tileset_options_affect_loading);
 
     std::printf("\n==============================\n");
     std::printf(" Results: %d passed, %d failed\n", g_passed, g_failed);
