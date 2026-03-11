@@ -61,3 +61,11 @@ set_target_properties(CesiumNativeC PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
+
+# ---------- Test executable ----------
+
+add_executable(CesiumNativeCTests tests/test_cesium_native_c.cpp)
+target_link_libraries(CesiumNativeCTests PRIVATE CesiumNativeC)
+set_target_properties(CesiumNativeCTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
