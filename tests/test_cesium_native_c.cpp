@@ -15,6 +15,12 @@
 #include <cstdio>
 #include <cstring>
 
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#endif
+
 // ---------- helpers ----------
 
 static int g_passed = 0;
@@ -415,6 +421,424 @@ static int test_tileset_create_from_url() {
 }
 
 // ============================================================================
+// Test: Cartographic to Cartesian — NYC position (from Hello World example)
+// ============================================================================
+
+static int test_cartographic_to_cartesian_nyc() {
+    const CesiumEllipsoid* wgs84 = cesium_ellipsoid_wgs84();
+
+    // New York City: 40.7128° N, 74.006° W, 1500 m
+    double lon = -74.006 * (PI / 180.0);
+    double lat = 40.7128 * (PI / 180.0);
+    double height = 1500.0;
+    CesiumCartographic nyc = {lon, lat, height};
+
+    CesiumVec3 ecef =
+        cesium_ellipsoid_cartographic_to_cartesian(wgs84, nyc);
+
+    // ECEF magnitude should be ~Earth radius + height
+    double mag = std::sqrt(ecef.x * ecef.x + ecef.y * ecef.y + ecef.z * ecef.z);
+    ASSERT_TRUE(mag > 6.37e6 && mag < 6.39e6);
+
+    // NYC is in the western hemisphere, positive latitude ⇒
+    //   x > 0 , y < 0, z > 0
+    ASSERT_TRUE(ecef.x > 0.0);
+    ASSERT_TRUE(ecef.y < 0.0);
+    ASSERT_TRUE(ecef.z > 0.0);
+
+    // Inverse conversion must recover the original
+    CesiumCartographic back;
+    int ok = cesium_ellipsoid_cartesian_to_cartographic(wgs84, ecef, &back);
+    ASSERT_EQ(ok, 1);
+    ASSERT_NEAR(back.longitude, lon, 1e-10);
+    ASSERT_NEAR(back.latitude, lat, 1e-10);
+    ASSERT_NEAR(back.height, height, 0.01);
+
+    return 0;
+}
+
+// ============================================================================
+// Test: East-North-Up transform matrix
+// ============================================================================
+
+static int test_east_north_up_transform() {
+    const CesiumEllipsoid* wgs84 = cesium_ellipsoid_wgs84();
+
+    // Position on the equator at the prime meridian
+    CesiumCartographic origin = {0.0, 0.0, 0.0};
+    CesiumVec3 ecef =
+        cesium_ellipsoid_cartographic_to_cartesian(wgs84, origin);
+
+    CesiumMat4 enu =
+        cesium_globe_transforms_east_north_up_to_fixed_frame(ecef, wgs84);
+
+    // The matrix should be a valid transformation (not zero/identity).
+    // Translation column (column 3) should equal the ECEF position.
+    ASSERT_NEAR(enu.m[12], ecef.x, 1.0);
+    ASSERT_NEAR(enu.m[13], ecef.y, 1.0);
+    ASSERT_NEAR(enu.m[14], ecef.z, 1.0);
+    ASSERT_NEAR(enu.m[15], 1.0, 1e-10);
+
+    // At (0,0) the ENU axes are:
+    //   East  = +Y global
+    //   North = +Z global
+    //   Up    = +X global
+    // Column 0 (East)
+    ASSERT_NEAR(enu.m[0], 0.0, 1e-6);
+    ASSERT_NEAR(enu.m[1], 1.0, 1e-6);
+    ASSERT_NEAR(enu.m[2], 0.0, 1e-6);
+    // Column 1 (North)
+    ASSERT_NEAR(enu.m[4], 0.0, 1e-6);
+    ASSERT_NEAR(enu.m[5], 0.0, 1e-6);
+    ASSERT_NEAR(enu.m[6], 1.0, 1e-6);
+    // Column 2 (Up)
+    ASSERT_NEAR(enu.m[8], 1.0, 1e-6);
+    ASSERT_NEAR(enu.m[9], 0.0, 1e-6);
+    ASSERT_NEAR(enu.m[10], 0.0, 1e-6);
+
+    return 0;
+}
+
+// ============================================================================
+// Test: Globe rectangle — creation, size, center, containment
+// ============================================================================
+
+static int test_globe_rectangle_queries() {
+    // Rectangle covering roughly Spain: 36°N–43.8°N, 9.3°W–3.3°E
+    CesiumGlobeRectangle spain =
+        cesium_globe_rectangle_from_degrees(-9.3, 36.0, 3.3, 43.8);
+
+    double widthRad = cesium_globe_rectangle_compute_width(spain);
+    double heightRad = cesium_globe_rectangle_compute_height(spain);
+
+    // Width ≈ 12.6° ≈ 0.22 rad, Height ≈ 7.8° ≈ 0.136 rad
+    ASSERT_NEAR(widthRad, 12.6 * PI / 180.0, 0.001);
+    ASSERT_NEAR(heightRad, 7.8 * PI / 180.0, 0.001);
+
+    CesiumCartographic center =
+        cesium_globe_rectangle_compute_center(spain);
+    // Center should be near (-3°, 39.9°)
+    ASSERT_NEAR(center.longitude, -3.0 * PI / 180.0, 0.01);
+    ASSERT_NEAR(center.latitude, 39.9 * PI / 180.0, 0.01);
+
+    // Madrid (40.4168° N, 3.7038° W) should be inside
+    CesiumCartographic madrid =
+        cesium_cartographic_from_degrees(-3.7038, 40.4168, 0.0);
+    ASSERT_EQ(cesium_globe_rectangle_contains(spain, madrid), 1);
+
+    // London (51.5° N, 0.13° W) should be outside (too far north)
+    CesiumCartographic london =
+        cesium_cartographic_from_degrees(-0.13, 51.5, 0.0);
+    ASSERT_EQ(cesium_globe_rectangle_contains(spain, london), 0);
+
+    return 0;
+}
+
+// ============================================================================
+// Test: TilesetOptions — all setters/getters round-trip
+// ============================================================================
+
+static int test_tileset_options_full_round_trip() {
+    CesiumTilesetOptions* opts = cesium_tileset_options_create();
+    ASSERT_NOT_NULL(opts);
+
+    cesium_tileset_options_set_preload_siblings(opts, 0);
+    ASSERT_EQ(cesium_tileset_options_get_preload_siblings(opts), 0);
+    cesium_tileset_options_set_preload_siblings(opts, 1);
+    ASSERT_EQ(cesium_tileset_options_get_preload_siblings(opts), 1);
+
+    cesium_tileset_options_set_enable_fog_culling(opts, 0);
+    ASSERT_EQ(cesium_tileset_options_get_enable_fog_culling(opts), 0);
+
+    cesium_tileset_options_set_enable_occlusion_culling(opts, 1);
+    ASSERT_EQ(cesium_tileset_options_get_enable_occlusion_culling(opts), 1);
+    cesium_tileset_options_set_enable_occlusion_culling(opts, 0);
+    ASSERT_EQ(cesium_tileset_options_get_enable_occlusion_culling(opts), 0);
+
+    cesium_tileset_options_set_enable_lod_transition_period(opts, 1);
+    ASSERT_EQ(cesium_tileset_options_get_enable_lod_transition_period(opts), 1);
+
+    cesium_tileset_options_set_lod_transition_length(opts, 0.75f);
+    ASSERT_NEAR(cesium_tileset_options_get_lod_transition_length(opts), 0.75f, 1e-6);
+
+    cesium_tileset_options_destroy(opts);
+    return 0;
+}
+
+// ============================================================================
+// Test: ViewState — orthographic creation
+// ============================================================================
+
+static int test_view_state_orthographic() {
+    CesiumVec3 pos = {6378137.0, 0.0, 0.0};
+    CesiumVec3 dir = {-1.0, 0.0, 0.0};
+    CesiumVec3 up = {0.0, 0.0, 1.0};
+    CesiumVec2 viewport = {1024.0, 768.0};
+
+    CesiumViewState* vs = cesium_view_state_create_orthographic(
+        pos, dir, up, viewport,
+        -500.0, 500.0, -375.0, 375.0, nullptr);
+    ASSERT_NOT_NULL(vs);
+
+    cesium_view_state_destroy(vs);
+    return 0;
+}
+
+// ============================================================================
+// Test: ViewState — creation from matrices
+// ============================================================================
+
+static int test_view_state_from_matrices() {
+    // Identity view matrix (camera at origin looking down -Z)
+    CesiumMat4 view = {};
+    view.m[0] = 1.0; view.m[5] = 1.0;
+    view.m[10] = 1.0; view.m[15] = 1.0;
+
+    // Simple perspective projection matrix
+    CesiumMat4 proj = {};
+    double fov = 60.0 * PI / 180.0;
+    double aspect = 16.0 / 9.0;
+    double f = 1.0 / std::tan(fov / 2.0);
+    double nearP = 0.1, farP = 10000.0;
+    proj.m[0] = f / aspect;
+    proj.m[5] = f;
+    proj.m[10] = (farP + nearP) / (nearP - farP);
+    proj.m[11] = -1.0;
+    proj.m[14] = (2.0 * farP * nearP) / (nearP - farP);
+
+    CesiumVec2 viewport = {1920.0, 1080.0};
+
+    CesiumViewState* vs = cesium_view_state_create_from_matrices(
+        view, proj, viewport, nullptr);
+    ASSERT_NOT_NULL(vs);
+
+    cesium_view_state_destroy(vs);
+    return 0;
+}
+
+// ============================================================================
+// Test: Load error callback — verify it can be set without crashing
+// ============================================================================
+
+struct LoadErrorTestData {
+    int callCount;
+    char lastMessage[256];
+};
+
+static void test_load_error_cb(void* userData, const char* message) {
+    auto* data = static_cast<LoadErrorTestData*>(userData);
+    data->callCount++;
+    if (message) {
+        std::strncpy(data->lastMessage, message, sizeof(data->lastMessage) - 1);
+        data->lastMessage[sizeof(data->lastMessage) - 1] = '\0';
+    }
+}
+
+static int test_load_error_callback() {
+    CesiumTilesetOptions* opts = cesium_tileset_options_create();
+    ASSERT_NOT_NULL(opts);
+
+    LoadErrorTestData errorData = {};
+
+    // Setting a callback should not crash
+    cesium_tileset_options_set_load_error_callback(
+        opts, test_load_error_cb, &errorData);
+
+    // Setting NULL callback should also work
+    cesium_tileset_options_set_load_error_callback(opts, nullptr, nullptr);
+
+    // Re-set it
+    cesium_tileset_options_set_load_error_callback(
+        opts, test_load_error_cb, &errorData);
+
+    cesium_tileset_options_destroy(opts);
+    return 0;
+}
+
+// ============================================================================
+// Test: ViewUpdateResult statistics accessors
+// ============================================================================
+
+static int test_view_update_result_statistics() {
+    CesiumAsyncSystem* async = cesium_async_system_create();
+    CesiumAssetAccessor* accessor = cesium_asset_accessor_create(nullptr);
+    CesiumCreditSystem* credits = cesium_credit_system_create();
+    CesiumTilesetExternals* ext =
+        cesium_tileset_externals_create(async, accessor, credits);
+
+    CesiumTileset* tileset = cesium_tileset_create_from_url(
+        ext, "http://localhost:1/nonexistent/tileset.json", nullptr);
+    ASSERT_NOT_NULL(tileset);
+
+    CesiumVec3 pos = {6378137.0, 0.0, 0.0};
+    CesiumVec3 dir = {-1.0, 0.0, 0.0};
+    CesiumVec3 up = {0.0, 0.0, 1.0};
+    CesiumVec2 viewport = {1920.0, 1080.0};
+    CesiumViewState* vs = cesium_view_state_create_perspective(
+        pos, dir, up, viewport,
+        60.0 * PI / 180.0, 33.75 * PI / 180.0, nullptr);
+
+    const CesiumViewState* views[] = {vs};
+    cesium_async_system_dispatch_main_thread_tasks(async);
+    const CesiumViewUpdateResult* result =
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    ASSERT_NOT_NULL(result);
+
+    // All accessors should return valid values without crashing
+    int renderCount = cesium_view_update_result_get_tiles_to_render_count(result);
+    ASSERT_TRUE(renderCount >= 0);
+
+    int fadingCount = cesium_view_update_result_get_tiles_fading_out_count(result);
+    ASSERT_TRUE(fadingCount >= 0);
+
+    int32_t frameNumber = cesium_view_update_result_get_frame_number(result);
+    ASSERT_TRUE(frameNumber >= 0);
+
+    uint32_t visited = cesium_view_update_result_get_tiles_visited(result);
+    uint32_t culled = cesium_view_update_result_get_tiles_culled(result);
+    uint32_t maxDepth = cesium_view_update_result_get_max_depth_visited(result);
+    (void)visited; (void)culled; (void)maxDepth; // just verify no crash
+
+    int32_t workerQueue =
+        cesium_view_update_result_get_worker_thread_load_queue_length(result);
+    int32_t mainQueue =
+        cesium_view_update_result_get_main_thread_load_queue_length(result);
+    ASSERT_TRUE(workerQueue >= 0);
+    ASSERT_TRUE(mainQueue >= 0);
+
+    // For a broken URL, no tiles should be ready to render
+    ASSERT_EQ(renderCount, 0);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_externals_destroy(ext);
+    cesium_credit_system_destroy(credits);
+    cesium_asset_accessor_destroy(accessor);
+    cesium_async_system_destroy(async);
+    return 0;
+}
+
+// ============================================================================
+// Test: Tileset create from Ion (bad token — exercises the Ion path)
+// ============================================================================
+
+static int test_tileset_create_from_ion() {
+    CesiumAsyncSystem* async = cesium_async_system_create();
+    CesiumAssetAccessor* accessor = cesium_asset_accessor_create(nullptr);
+    CesiumCreditSystem* credits = cesium_credit_system_create();
+    CesiumTilesetExternals* ext =
+        cesium_tileset_externals_create(async, accessor, credits);
+    CesiumTilesetOptions* opts = cesium_tileset_options_create();
+
+    // Use an invalid token — tileset should be created but fail to load
+    CesiumTileset* tileset = cesium_tileset_create_from_ion(
+        ext, 1, "INVALID_TOKEN_FOR_TESTING", opts, nullptr);
+    ASSERT_NOT_NULL(tileset);
+
+    // Pump a few frames — should not crash
+    CesiumVec3 pos = {6378137.0, 0.0, 0.0};
+    CesiumVec3 dir = {-1.0, 0.0, 0.0};
+    CesiumVec3 up = {0.0, 0.0, 1.0};
+    CesiumVec2 viewport = {800.0, 600.0};
+    CesiumViewState* vs = cesium_view_state_create_perspective(
+        pos, dir, up, viewport,
+        60.0 * PI / 180.0, 45.0 * PI / 180.0, nullptr);
+    const CesiumViewState* views[] = {vs};
+
+    for (int i = 0; i < 5; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(async);
+        const CesiumViewUpdateResult* result =
+            cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        ASSERT_NOT_NULL(result);
+    }
+
+    // Load progress should be a valid float
+    float progress = cesium_tileset_compute_load_progress(tileset);
+    ASSERT_TRUE(progress >= 0.0f && progress <= 100.0f);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(opts);
+    cesium_tileset_externals_destroy(ext);
+    cesium_credit_system_destroy(credits);
+    cesium_asset_accessor_destroy(accessor);
+    cesium_async_system_destroy(async);
+    return 0;
+}
+
+// ============================================================================
+// Test: Tileset data accessors (numberOfTilesLoaded, totalDataBytes)
+// ============================================================================
+
+static int test_tileset_data_accessors() {
+    CesiumAsyncSystem* async = cesium_async_system_create();
+    CesiumAssetAccessor* accessor = cesium_asset_accessor_create(nullptr);
+    CesiumCreditSystem* credits = cesium_credit_system_create();
+    CesiumTilesetExternals* ext =
+        cesium_tileset_externals_create(async, accessor, credits);
+
+    CesiumTileset* tileset = cesium_tileset_create_from_url(
+        ext, "http://localhost:1/nonexistent/tileset.json", nullptr);
+    ASSERT_NOT_NULL(tileset);
+
+    // Before any loading, these should return 0 without crashing
+    int32_t numLoaded = cesium_tileset_get_number_of_tiles_loaded(tileset);
+    ASSERT_TRUE(numLoaded >= 0);
+
+    int64_t totalBytes = cesium_tileset_get_total_data_bytes(tileset);
+    ASSERT_TRUE(totalBytes >= 0);
+
+    float progress = cesium_tileset_compute_load_progress(tileset);
+    ASSERT_TRUE(progress >= 0.0f && progress <= 100.0f);
+
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_externals_destroy(ext);
+    cesium_credit_system_destroy(credits);
+    cesium_asset_accessor_destroy(accessor);
+    cesium_async_system_destroy(async);
+    return 0;
+}
+
+// ============================================================================
+// Test: Scale-to-geodetic and scale-to-geocentric surface
+// ============================================================================
+
+static int test_scale_to_surface() {
+    const CesiumEllipsoid* wgs84 = cesium_ellipsoid_wgs84();
+
+    // A point 1000 m above Madrid
+    CesiumCartographic madrid =
+        cesium_cartographic_from_degrees(-3.7038, 40.4168, 1000.0);
+    CesiumVec3 above =
+        cesium_ellipsoid_cartographic_to_cartesian(wgs84, madrid);
+
+    // Scale to geodetic surface — should project to height ≈ 0
+    CesiumVec3 onSurface;
+    int ok = cesium_ellipsoid_scale_to_geodetic_surface(wgs84, above, &onSurface);
+    ASSERT_EQ(ok, 1);
+
+    CesiumCartographic surfaceCarto;
+    cesium_ellipsoid_cartesian_to_cartographic(wgs84, onSurface, &surfaceCarto);
+    ASSERT_NEAR(surfaceCarto.height, 0.0, 0.1);
+    ASSERT_NEAR(surfaceCarto.longitude, madrid.longitude, 1e-6);
+    ASSERT_NEAR(surfaceCarto.latitude, madrid.latitude, 1e-6);
+
+    // Scale to geocentric surface
+    CesiumVec3 geocentric;
+    ok = cesium_ellipsoid_scale_to_geocentric_surface(wgs84, above, &geocentric);
+    ASSERT_EQ(ok, 1);
+
+    // Geocentric point should have smaller magnitude than the original
+    double magAbove = std::sqrt(above.x * above.x + above.y * above.y + above.z * above.z);
+    double magGeo = std::sqrt(geocentric.x * geocentric.x +
+                              geocentric.y * geocentric.y +
+                              geocentric.z * geocentric.z);
+    ASSERT_TRUE(magGeo < magAbove);
+
+    return 0;
+}
+
+// ============================================================================
 // Test: NULL safety — all destroy functions should accept NULL
 // ============================================================================
 
@@ -456,6 +880,19 @@ int main() {
     RUN_TEST(test_view_state_perspective);
     RUN_TEST(test_tileset_create_from_url);
     RUN_TEST(test_null_safety);
+
+    // New tests from Hello World patterns
+    RUN_TEST(test_cartographic_to_cartesian_nyc);
+    RUN_TEST(test_east_north_up_transform);
+    RUN_TEST(test_globe_rectangle_queries);
+    RUN_TEST(test_tileset_options_full_round_trip);
+    RUN_TEST(test_view_state_orthographic);
+    RUN_TEST(test_view_state_from_matrices);
+    RUN_TEST(test_load_error_callback);
+    RUN_TEST(test_view_update_result_statistics);
+    RUN_TEST(test_tileset_create_from_ion);
+    RUN_TEST(test_tileset_data_accessors);
+    RUN_TEST(test_scale_to_surface);
 
     std::printf("\n==============================\n");
     std::printf(" Results: %d passed, %d failed\n", g_passed, g_failed);
