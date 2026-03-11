@@ -1,0 +1,122 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CMAKE_BUILD_TYPE: Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: x64
+            triplet: x64-windows
+            generator: "Visual Studio 17 2022"
+            cmake-arch: "-A x64"
+            artifact: windows-x64
+            lib-path: build/bin/Release/CesiumNativeC.*
+            skip-tests: false
+
+          - os: windows-latest
+            arch: arm64
+            triplet: arm64-windows
+            generator: "Visual Studio 17 2022"
+            cmake-arch: "-A ARM64"
+            artifact: windows-arm64
+            lib-path: build/bin/Release/CesiumNativeC.*
+            skip-tests: true  # cross-compiled, can't run on x64
+
+          - os: ubuntu-latest
+            arch: x64
+            triplet: x64-linux
+            generator: Ninja
+            cmake-arch: ""
+            artifact: linux-x64
+            lib-path: build/bin/libCesiumNativeC.*
+            skip-tests: false
+
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            triplet: arm64-linux
+            generator: Ninja
+            cmake-arch: ""
+            artifact: linux-arm64
+            lib-path: build/bin/libCesiumNativeC.*
+            skip-tests: false
+
+          - os: macos-14
+            arch: arm64
+            triplet: arm64-osx
+            generator: Ninja
+            cmake-arch: ""
+            artifact: osx-arm64
+            lib-path: build/bin/libCesiumNativeC.*
+            skip-tests: false
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.artifact }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ---- Install platform tools ----
+
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build nasm pkg-config
+
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja nasm
+
+      # ---- vcpkg ----
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: afc0a2e01ae104a2474216a2df0e8d78516fd5af
+
+      # ---- Build ----
+
+      - name: CMake configure
+        run: >
+          cmake -S . -B build
+          -G "${{ matrix.generator }}" ${{ matrix.cmake-arch }}
+          -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
+
+      - name: CMake build
+        run: cmake --build build --config ${{ env.CMAKE_BUILD_TYPE }} --parallel
+
+      # ---- Test ----
+
+      - name: Run tests
+        if: ${{ !matrix.skip-tests }}
+        run: cmake --build build --config ${{ env.CMAKE_BUILD_TYPE }} --target CesiumNativeCTests --parallel && ctest --test-dir build --build-config ${{ env.CMAKE_BUILD_TYPE }} --output-on-failure --no-tests=error
+        env:
+          # Offline tests only in CI — no Ion token
+          CESIUM_ION_TOKEN: ""
+
+      # ---- Upload ----
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CesiumNativeC-${{ matrix.artifact }}
+          path: |
+            ${{ matrix.lib-path }}
+            build/lib/*CesiumNativeC*
+          if-no-files-found: error

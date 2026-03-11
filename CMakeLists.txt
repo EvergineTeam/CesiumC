@@ -4,6 +4,13 @@ project(CesiumNativeC LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Required on Linux/macOS: static libs linked into our shared lib need PIC.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Hide internal symbols by default on Unix; only CESIUM_API symbols are exported.
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
 # Build cesium-native as a subdirectory.
 # Disable tests and curl (not needed for our wrapper).
 set(CESIUM_TESTS_ENABLED OFF CACHE BOOL "" FORCE)
@@ -64,8 +71,12 @@ set_target_properties(CesiumNativeC PROPERTIES
 
 # ---------- Test executable ----------
 
+enable_testing()
+
 add_executable(CesiumNativeCTests tests/test_cesium_native_c.cpp)
 target_link_libraries(CesiumNativeCTests PRIVATE CesiumNativeC)
 set_target_properties(CesiumNativeCTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+add_test(NAME CesiumNativeCTests COMMAND CesiumNativeCTests)
