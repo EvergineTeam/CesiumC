@@ -14,6 +14,8 @@
 #include <Cesium3DTilesSelection/TilesetOptions.h>
 #include <Cesium3DTilesSelection/ViewState.h>
 #include <Cesium3DTilesSelection/ViewUpdateResult.h>
+#include "cesium_wrappers.h"
+
 #include <CesiumAsync/AsyncSystem.h>
 #include <CesiumAsync/IAssetAccessor.h>
 #include <CesiumCurl/CurlAssetAccessor.h>
@@ -22,32 +24,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-
-// ---- Internal wrapper type definitions ----
-// These must match the layout assumed by other translation units.
-
-struct AsyncSystemWrapper {
-    std::shared_ptr<CesiumAsync::ITaskProcessor> pTaskProcessor;
-    CesiumAsync::AsyncSystem asyncSystem;
-};
-
-struct AssetAccessorWrapper {
-    std::shared_ptr<CesiumCurl::CurlAssetAccessor> pAccessor;
-};
-
-struct CreditSystemWrapper {
-    std::shared_ptr<CesiumUtility::CreditSystem> pCreditSystem;
-    std::vector<std::string> cachedCredits;
-};
-
-struct ExternalsWrapper {
-    Cesium3DTilesSelection::TilesetExternals externals;
-    std::shared_ptr<CCallbackRendererResources> pRendererResources;
-};
-
-struct TilesetWrapper {
-    std::unique_ptr<Cesium3DTilesSelection::Tileset> pTileset;
-};
 
 // ---- Helper casts ----
 
@@ -85,6 +61,10 @@ extern "C" {
 // TilesetExternals
 // ============================================================================
 
+/**
+ * @note The caller must keep asyncSystem, accessor, and creditSystem alive
+ * for the entire lifetime of any Tileset created with these externals.
+ */
 CESIUM_API CesiumTilesetExternals* cesium_tileset_externals_create(
     CesiumAsyncSystem* asyncSystem,
     CesiumAssetAccessor* accessor,

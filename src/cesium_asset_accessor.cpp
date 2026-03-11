@@ -7,14 +7,12 @@
 
 #include <cesium/cesium_tileset.h>
 
+#include "cesium_wrappers.h"
+
 #include <CesiumCurl/CurlAssetAccessor.h>
 
 #include <memory>
 #include <string>
-
-struct AssetAccessorWrapper {
-    std::shared_ptr<CesiumCurl::CurlAssetAccessor> pAccessor;
-};
 
 extern "C" {
 

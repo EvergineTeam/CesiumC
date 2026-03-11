@@ -233,6 +233,8 @@ CESIUM_API void cesium_credit_system_start_next_frame(CesiumCreditSystem* credit
 /**
  * @brief Creates the externals bundle required to construct a Tileset.
  * None of the parameters are consumed; the externals hold shared references.
+ * @warning The caller must keep asyncSystem, accessor, and creditSystem alive
+ * for the entire lifetime of any Tileset created with these externals.
  */
 CESIUM_API CesiumTilesetExternals* cesium_tileset_externals_create(
     CesiumAsyncSystem* asyncSystem,

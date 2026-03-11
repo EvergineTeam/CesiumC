@@ -17,22 +17,13 @@
 #include <CesiumIonClient/Connection.h>
 #include <CesiumIonClient/Token.h>
 #include <CesiumIonClient/TokenList.h>
+#include "cesium_wrappers.h"
+
 #include <CesiumUtility/Result.h>
 
 #include <memory>
 #include <string>
 #include <vector>
-
-// ---- Internal wrapper types (must match layout in other TUs) ----
-
-struct AsyncSystemWrapper {
-    std::shared_ptr<CesiumAsync::ITaskProcessor> pTaskProcessor;
-    CesiumAsync::AsyncSystem asyncSystem;
-};
-
-struct AssetAccessorWrapper {
-    std::shared_ptr<CesiumCurl::CurlAssetAccessor> pAccessor;
-};
 
 struct IonConnectionWrapper {
     std::unique_ptr<CesiumIonClient::Connection> pConnection;

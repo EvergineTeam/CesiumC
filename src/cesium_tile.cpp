@@ -75,9 +75,7 @@ CESIUM_API double cesium_tile_get_geometric_error(const CesiumTile* tile) {
 }
 
 CESIUM_API CesiumMat4 cesium_tile_get_transform(const CesiumTile* tile) {
-    CesiumMat4 identity;
-    std::memset(&identity, 0, sizeof(identity));
-    if (!tile) return identity;
+    if (!tile) return cesiumMat4Identity();
     return fromGlmMat4(asTile(tile)->getTransform());
 }
 
@@ -134,8 +132,8 @@ CESIUM_API const CesiumTile* cesium_tile_get_child(
 CESIUM_API CesiumBoundingVolume cesium_tile_get_bounding_volume(
     const CesiumTile* tile)
 {
-    CesiumBoundingVolume empty;
-    std::memset(&empty, 0, sizeof(empty));
+    CesiumBoundingVolume empty{};
+    empty.type = CESIUM_BOUNDING_VOLUME_SPHERE;
     if (!tile) return empty;
     CESIUM_TRY_BEGIN
     return toBoundingVolume(asTile(tile)->getBoundingVolume());

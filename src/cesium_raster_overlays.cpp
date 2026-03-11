@@ -29,13 +29,10 @@ using CesiumUtility::IntrusivePointer;
 
 // Each CesiumRasterOverlay* handle stores an IntrusivePointer to keep the
 // reference-counted overlay alive.
+#include "cesium_wrappers.h"
+
 struct RasterOverlayHandle {
     IntrusivePointer<RasterOverlay> pOverlay;
-};
-
-// ---- Tileset wrapper (must match layout in cesium_tileset.cpp) ----
-struct TilesetWrapper {
-    std::unique_ptr<Cesium3DTilesSelection::Tileset> pTileset;
 };
 
 extern "C" {

@@ -52,6 +52,12 @@ static inline CesiumMat4 fromGlmMat4(const glm::dmat4& m) {
     return result;
 }
 
+static inline CesiumMat4 cesiumMat4Identity() {
+    CesiumMat4 m{};
+    m.m[0] = m.m[5] = m.m[10] = m.m[15] = 1.0;
+    return m;
+}
+
 // ---------- Cartographic conversions ----------
 
 static inline CesiumGeospatial::Cartographic toCartographic(CesiumCartographic c) {

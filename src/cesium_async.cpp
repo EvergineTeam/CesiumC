@@ -76,22 +76,21 @@ private:
     bool _stop;
 };
 
-struct AsyncSystemWrapper {
-    std::shared_ptr<ThreadPoolTaskProcessor> pTaskProcessor;
-    CesiumAsync::AsyncSystem asyncSystem;
-
-    explicit AsyncSystemWrapper()
-        : pTaskProcessor(std::make_shared<ThreadPoolTaskProcessor>()),
-          asyncSystem(pTaskProcessor) {}
-};
-
 } // anonymous namespace
+
+#include "cesium_wrappers.h"
+
+static AsyncSystemWrapper* createAsyncSystemWrapper() {
+    auto pTP = std::make_shared<ThreadPoolTaskProcessor>();
+    auto* w = new AsyncSystemWrapper{pTP, CesiumAsync::AsyncSystem(pTP)};
+    return w;
+}
 
 extern "C" {
 
 CESIUM_API CesiumAsyncSystem* cesium_async_system_create(void) {
     CESIUM_TRY_BEGIN
-    auto* wrapper = new AsyncSystemWrapper();
+    auto* wrapper = createAsyncSystemWrapper();
     return reinterpret_cast<CesiumAsyncSystem*>(wrapper);
     CESIUM_TRY_END
     return nullptr;

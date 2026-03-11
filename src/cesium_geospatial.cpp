@@ -206,8 +206,7 @@ CESIUM_API CesiumMat4 cesium_globe_transforms_east_north_up_to_fixed_frame(
     glm::dmat4 m = GlobeTransforms::eastNorthUpToFixedFrame(toGlm(origin), e);
     return fromGlmMat4(m);
     CESIUM_TRY_END
-    CesiumMat4 identity{};
-    return identity;
+    return cesiumMat4Identity();
 }
 
 } // extern "C"

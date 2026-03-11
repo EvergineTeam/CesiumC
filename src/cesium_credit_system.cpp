@@ -7,17 +7,13 @@
 
 #include <cesium/cesium_tileset.h>
 
+#include "cesium_wrappers.h"
+
 #include <CesiumUtility/CreditSystem.h>
 
 #include <memory>
 #include <string>
 #include <vector>
-
-struct CreditSystemWrapper {
-    std::shared_ptr<CesiumUtility::CreditSystem> pCreditSystem;
-    // Cache for on-screen credit HTML strings
-    std::vector<std::string> cachedCredits;
-};
 
 extern "C" {
 
@@ -41,8 +37,8 @@ CESIUM_API int cesium_credit_system_get_credits_to_show_on_screen_count(
 {
     if (!creditSystem) return 0;
     CESIUM_TRY_BEGIN
-    auto* wrapper = const_cast<CreditSystemWrapper*>(
-        reinterpret_cast<const CreditSystemWrapper*>(creditSystem));
+    const auto* wrapper =
+        reinterpret_cast<const CreditSystemWrapper*>(creditSystem);
     const auto& snapshot = wrapper->pCreditSystem->getSnapshot(
         CesiumUtility::CreditFilteringMode::UniqueHtml);
 
@@ -64,8 +60,8 @@ CESIUM_API const char* cesium_credit_system_get_credit_to_show_on_screen(
 {
     if (!creditSystem) return nullptr;
     CESIUM_TRY_BEGIN
-    auto* wrapper = const_cast<CreditSystemWrapper*>(
-        reinterpret_cast<const CreditSystemWrapper*>(creditSystem));
+    const auto* wrapper =
+        reinterpret_cast<const CreditSystemWrapper*>(creditSystem);
     if (index < 0 || index >= static_cast<int>(wrapper->cachedCredits.size()))
         return nullptr;
     return wrapper->cachedCredits[static_cast<size_t>(index)].c_str();
