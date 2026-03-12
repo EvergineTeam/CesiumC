@@ -19,7 +19,7 @@ jobs:
           - os: windows-latest
             arch: x64
             triplet: x64-windows
-            generator: "Visual Studio 18 2026"
+            generator: "Visual Studio 17 2022"
             cmake-arch: "-A x64"
             artifact: windows-x64
             lib-path: build/bin/Release/CesiumNativeC.*
@@ -28,7 +28,7 @@ jobs:
           - os: windows-latest
             arch: arm64
             triplet: arm64-windows
-            generator: "Visual Studio 18 2026"
+            generator: "Visual Studio 17 2022"
             cmake-arch: "-A ARM64"
             artifact: windows-arm64
             lib-path: build/bin/Release/CesiumNativeC.*
@@ -96,7 +96,7 @@ jobs:
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: afc0a2e01ae104a2474216a2df0e8d78516fd5af
+          vcpkgGitCommitId: 62159a45e18f3a9ac0548628dcaf74fcb60c6ff9
 
       # ---- Build ----
 
