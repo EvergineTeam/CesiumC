@@ -118,13 +118,10 @@ A minimal C program that creates a Cesium World Terrain tileset from Cesium Ion,
 static const char* ION_ACCESS_TOKEN = "YOUR_CESIUM_ION_ACCESS_TOKEN";
 
 /* Simple load-error callback – just prints the message */
-static void on_load_error(int type, int httpStatus, const char* message,
-                          void* userData) {
+static void on_load_error(void* userData, const char* message) {
     (void)userData;
-    fprintf(stderr, "[load error] type=%d http=%d: %s\n", type, httpStatus,
-            message);
+    fprintf(stderr, "[load error] %s\n", message);
 }
-
 int main(void) {
     /* ---- 1. Create core systems ---- */
     CesiumAsyncSystem*    async    = cesium_async_system_create();
