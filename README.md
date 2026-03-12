@@ -201,10 +201,14 @@ int main(void) {
     CesiumVec3 up = cesium_ellipsoid_geodetic_surface_normal_cartographic(
         wgs84, cameraCartographic);
 
+    CesiumVec2 viewportSize = { 1920.0, 1080.0 };
+
     CesiumViewState* viewState = cesium_view_state_create_perspective(
         cameraPosition, direction, up,
-        /* viewport */ 1920, 1080,
-        /* horizontal FOV (radians) */ 1.0472 /* ~60° */);
+        /* viewport */ viewportSize,
+        /* horizontal FOV (radians) */ 1.0472 /* ~60° */,
+        /* vertical FOV (radians) */ 1.0472 /* ~60° */,
+        /* ellipsoid */ wgs84);
 
     /* ---- 6. Update the tileset for this view ---- */
     const CesiumViewUpdateResult* result =
