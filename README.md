@@ -102,7 +102,7 @@ Plain-old-data structs safe for P/Invoke / FFI:
 A minimal C program that creates a Cesium World Terrain tileset from Cesium Ion, runs one frame update, and prints the tiles selected for rendering.
 
 ```c
-#include <cesium/cesium-native-api.h>
+#include <cesium-native-api.h>
 #include <math.h>
 #include <stdio.h>
 
