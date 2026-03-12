@@ -8,7 +8,8 @@ on:
 
 env:
   CMAKE_BUILD_TYPE: Release
-  VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
+  VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-cache,readwrite
 
 jobs:
   build:
@@ -66,14 +67,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       # ---- vcpkg binary caching ----
 
       - name: Export GitHub Actions cache variables
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -97,6 +98,15 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 62159a45e18f3a9ac0548628dcaf74fcb60c6ff9
+
+      # ---- Cache vcpkg artifacts ----
+      - name: Set up binary cache
+        uses: actions/cache@v5.0.3
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ runner.os }}-vcpkg-binary-cache-${{ hashFiles('vcpkg*.json') }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-binary-cache-
 
       # ---- Build ----
 
