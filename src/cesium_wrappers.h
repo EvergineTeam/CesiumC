@@ -20,6 +20,8 @@
 #include <CesiumCurl/CurlAssetAccessor.h>
 #include <CesiumUtility/CreditSystem.h>
 
+#include <cesium/cesium_tileset.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,6 +47,11 @@ struct ExternalsWrapper {
 
 struct TilesetWrapper {
     std::unique_ptr<Cesium3DTilesSelection::Tileset> pTileset;
+
+    // Root-tile-available callback (single slot, updatable)
+    CesiumRootTileAvailableCallback rootTileCallback = nullptr;
+    void* rootTileCallbackUserData = nullptr;
+    bool rootTileEventRegistered = false;
 };
 
 #endif /* CESIUM_WRAPPERS_H */

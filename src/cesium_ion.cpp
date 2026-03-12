@@ -24,6 +24,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <thread>
+#include <chrono>
 
 struct IonConnectionWrapper {
     std::unique_ptr<CesiumIonClient::Connection> pConnection;

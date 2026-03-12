@@ -229,11 +229,20 @@ CESIUM_API void cesium_tileset_set_root_tile_available_callback(
 {
     if (!tileset) return;
     CESIUM_TRY_BEGIN
-    auto* ts = asTileset(tileset)->pTileset.get();
-    if (callback) {
-        ts->getRootTileAvailableEvent().thenInMainThread(
-            [callback, userData]() {
-                callback(userData);
+    auto* wrapper = asTileset(tileset);
+
+    // Update the stored callback (NULL clears it)
+    wrapper->rootTileCallback = callback;
+    wrapper->rootTileCallbackUserData = userData;
+
+    // Register the event forwarder only once
+    if (!wrapper->rootTileEventRegistered) {
+        wrapper->rootTileEventRegistered = true;
+        wrapper->pTileset->getRootTileAvailableEvent().thenInMainThread(
+            [wrapper]() {
+                if (wrapper->rootTileCallback) {
+                    wrapper->rootTileCallback(wrapper->rootTileCallbackUserData);
+                }
             });
     }
     CESIUM_TRY_END
