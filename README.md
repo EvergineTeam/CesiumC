@@ -211,8 +211,9 @@ int main(void) {
         /* ellipsoid */ wgs84);
 
     /* ---- 6. Update the tileset for this view ---- */
+    const CesiumViewState* viewStates[] = { viewState };
     const CesiumViewUpdateResult* result =
-        cesium_tileset_update_view(tileset, &viewState, 1);
+        cesium_tileset_update_view(tileset, viewStates, 1, 0.016);
 
     int tileCount = cesium_view_update_result_get_tiles_to_render_count(result);
     printf("Tiles to render: %d\n", tileCount);
