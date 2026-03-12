@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(CesiumNativeC LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Required on Linux/macOS: static libs linked into our shared lib need PIC.
@@ -12,7 +12,7 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
 # Build cesium-native as a subdirectory.
-# Disable tests and curl (not needed for our wrapper).
+# Disable tests (not needed for our wrapper).
 set(CESIUM_TESTS_ENABLED OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/cesium-native
