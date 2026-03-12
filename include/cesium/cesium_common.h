@@ -150,12 +150,6 @@ typedef struct CesiumBoundingVolume {
  */
 typedef void (*CesiumLogCallback)(void* userData, int level, const char* message);
 
-/**
- * @brief Sets a global log callback to receive spdlog messages.
- * Pass NULL to disable.
- */
-CESIUM_API void cesium_set_log_callback(CesiumLogCallback callback, void* userData);
-
 #ifdef __cplusplus
 }
 #endif
