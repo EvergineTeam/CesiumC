@@ -1,0 +1,28 @@
+# Build outputs
+build/
+out/
+bin/
+obj/
+x64/
+x86/
+Debug/
+Release/
+vcpkg_installed/
+
+# IDE
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+# NuGet
+packages/
+*.nupkg
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Generated bindings
+src/CesiumNative/Generated/*.cs
