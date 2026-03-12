@@ -142,7 +142,7 @@ int main(void) {
 
     /* ---- 3. Open Cesium World Terrain (Ion asset ID 1) ---- */
     CesiumTileset* tileset = cesium_tileset_create_from_ion(
-        externals, options, 1, ION_ACCESS_TOKEN);
+        externals, 1, ION_ACCESS_TOKEN, options, NULL);
 
     if (!tileset) {
         fprintf(stderr, "Failed to create tileset: %s\n", cesium_get_last_error());
