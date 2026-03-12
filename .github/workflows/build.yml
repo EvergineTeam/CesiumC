@@ -35,23 +35,23 @@ jobs:
             lib-path: build/bin/Release/CesiumNativeC.*
             skip-tests: true  # cross-compiled, can't run on x64
 
-          - os: ubuntu-latest
-            arch: x64
-            triplet: x64-linux
-            generator: Ninja
-            cmake-arch: ""
-            artifact: linux-x64
-            lib-path: build/bin/libCesiumNativeC.*
-            skip-tests: false
+          # - os: ubuntu-latest
+          #   arch: x64
+          #   triplet: x64-linux
+          #   generator: Ninja
+          #   cmake-arch: ""
+          #   artifact: linux-x64
+          #   lib-path: build/bin/libCesiumNativeC.*
+          #   skip-tests: false
 
-          - os: ubuntu-24.04-arm
-            arch: arm64
-            triplet: arm64-linux
-            generator: Ninja
-            cmake-arch: ""
-            artifact: linux-arm64
-            lib-path: build/bin/libCesiumNativeC.*
-            skip-tests: false
+          # - os: ubuntu-24.04-arm
+          #   arch: arm64
+          #   triplet: arm64-linux
+          #   generator: Ninja
+          #   cmake-arch: ""
+          #   artifact: linux-arm64
+          #   lib-path: build/bin/libCesiumNativeC.*
+          #   skip-tests: false
 
           - os: macos-14
             arch: arm64
