@@ -141,8 +141,60 @@ CESIUM_API void cesium_ion_connection_authorize(
         }
     }
 
-    int64_t clientID = std::stoll(std::string(appID));
+    // Parse appID as a 64-bit integer without throwing. On failure, complete
+    // the callback with nullptr so callers are not left waiting.
+    int64_t clientID = 0;
+    {
+        const char* p = appID;
+        if (*p == '\0') {
+            completeCallback(completeCallbackUserData, nullptr);
+            return;
+        }
 
+        bool negative = false;
+        if (*p == '+' || *p == '-') {
+            negative = (*p == '-');
+            ++p;
+        }
+
+        if (*p == '\0') {
+            // String was only a sign, no digits.
+            completeCallback(completeCallbackUserData, nullptr);
+            return;
+        }
+
+        int64_t value = 0;
+        bool parseOk = true;
+        for (; *p != '\0'; ++p) {
+            if (*p < '0' || *p > '9') {
+                parseOk = false;
+                break;
+            }
+
+            int digit = *p - '0';
+            // Basic overflow checks for 64-bit signed range.
+            if (!negative) {
+                if (value > (std::numeric_limits<int64_t>::max() - digit) / 10) {
+                    parseOk = false;
+                    break;
+                }
+                value = value * 10 + digit;
+            } else {
+                if (value < (std::numeric_limits<int64_t>::min() + digit) / 10) {
+                    parseOk = false;
+                    break;
+                }
+                value = value * 10 - digit;
+            }
+        }
+
+        if (!parseOk) {
+            completeCallback(completeCallbackUserData, nullptr);
+            return;
+        }
+
+        clientID = value;
+    }
     // First get app data
     CesiumIonClient::Connection::appData(
         asyncWrapper->asyncSystem, accessorWrapper->pAccessor, apiUrl)
