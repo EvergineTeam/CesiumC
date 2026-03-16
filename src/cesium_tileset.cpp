@@ -79,11 +79,7 @@ CESIUM_API CesiumTilesetExternals* cesium_tileset_externals_create(
         asAccessor(accessor)->pAccessor,
         pRenderer,
         asAsync(asyncSystem)->asyncSystem,
-        asCredits(creditSystem)->pCreditSystem,
-        nullptr, // pLogger
-        nullptr, // pTileOcclusionProxyPool
-        nullptr, // pSharedAssetSystem
-        nullptr  // pGltfModifier
+        asCredits(creditSystem)->pCreditSystem
     };
 
     auto* wrapper = new ExternalsWrapper{std::move(ext), pRenderer};
