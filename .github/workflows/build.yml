@@ -23,7 +23,8 @@ jobs:
             generator: "Visual Studio 17 2022"
             cmake-arch: "-A x64"
             artifact: windows-x64
-            lib-path: build/bin/Release/CesiumNativeC.*
+            bin-path: build/bin/Release/
+            lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: false
 
           - os: windows-latest
@@ -32,7 +33,8 @@ jobs:
             generator: "Visual Studio 17 2022"
             cmake-arch: "-A ARM64"
             artifact: windows-arm64
-            lib-path: build/bin/Release/CesiumNativeC.*
+            bin-path: build/bin/Release/
+            lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: true  # cross-compiled, can't run on x64
 
           # - os: ubuntu-latest
@@ -41,7 +43,8 @@ jobs:
           #   generator: Ninja
           #   cmake-arch: ""
           #   artifact: linux-x64
-          #   lib-path: build/bin/libCesiumNativeC.*
+          #   bin-path: build/bin/
+          #   lib-path: build/lib/libCesiumNativeC.*
           #   skip-tests: false
 
           # - os: ubuntu-24.04-arm
@@ -50,7 +53,8 @@ jobs:
           #   generator: Ninja
           #   cmake-arch: ""
           #   artifact: linux-arm64
-          #   lib-path: build/bin/libCesiumNativeC.*
+          #   bin-path: build/bin/
+          #   lib-path: build/lib/libCesiumNativeC.*
           #   skip-tests: false
 
           - os: macos-14
@@ -59,7 +63,8 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: osx-arm64
-            lib-path: build/bin/libCesiumNativeC.*
+            bin-path: build/bin/
+            lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
 
     runs-on: ${{ matrix.os }}
@@ -137,6 +142,6 @@ jobs:
         with:
           name: CesiumNativeC-${{ matrix.artifact }}
           path: |
+            ${{ matrix.bin-path }}
             ${{ matrix.lib-path }}
-            build/lib/*CesiumNativeC*
           if-no-files-found: error
