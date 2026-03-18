@@ -23,7 +23,7 @@ jobs:
             generator: "Visual Studio 17 2022"
             cmake-arch: "-A x64"
             artifact: windows-x64
-            bin-path: build/bin/Release/
+            bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: false
 
@@ -33,7 +33,7 @@ jobs:
             generator: "Visual Studio 17 2022"
             cmake-arch: "-A ARM64"
             artifact: windows-arm64
-            bin-path: build/bin/Release/
+            bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: true  # cross-compiled, can't run on x64
 
