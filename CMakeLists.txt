@@ -53,6 +53,8 @@ target_link_libraries(CesiumNativeC
         CesiumGeometry
         CesiumGltf
         CesiumGltfReader
+        CesiumGltfWriter
+        CesiumJsonWriter
         CesiumUtility
         Cesium3DTilesSelection
         CesiumRasterOverlays

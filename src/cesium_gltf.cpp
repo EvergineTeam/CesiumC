@@ -11,6 +11,7 @@
 #include <CesiumGltf/Accessor.h>
 #include <CesiumGltf/ImageAsset.h>
 #include <CesiumGltfReader/GltfReader.h>
+#include <CesiumGltfWriter/GltfWriter.h>
 
 #include <cstddef>
 #include <cstring>
@@ -648,6 +649,51 @@ CESIUM_API int cesium_gltf_image_get_data(
     out->channels = asset.channels;
     out->bytesPerChannel = asset.bytesPerChannel;
     return 1;
+}
+
+// ---------- GLB serialization ----------
+
+CESIUM_API int cesium_gltf_model_write_glb(
+    const CesiumGltfModel* model,
+    uint8_t** out_data,
+    size_t* out_size)
+{
+    if (!model || !out_data || !out_size) return 0;
+
+    CESIUM_TRY_BEGIN
+    const auto* m = asModel(model);
+
+    // Collect buffer data from the first buffer (GLB binary chunk)
+    std::span<const std::byte> bufferData;
+    if (!m->buffers.empty() && !m->buffers[0].cesium.data.empty()) {
+        bufferData = std::span<const std::byte>(
+            m->buffers[0].cesium.data.data(),
+            m->buffers[0].cesium.data.size());
+    }
+
+    CesiumGltfWriter::GltfWriter writer;
+    auto result = writer.writeGlb(*m, bufferData);
+
+    if (!result.errors.empty() || result.gltfBytes.empty()) {
+        if (!result.errors.empty())
+            cesium_set_last_error(result.errors[0].c_str());
+        return 0;
+    }
+
+    // Transfer ownership to a heap allocation the caller can free
+    auto size = result.gltfBytes.size();
+    auto* data = new uint8_t[size];
+    std::memcpy(data, result.gltfBytes.data(), size);
+
+    *out_data = data;
+    *out_size = size;
+    return 1;
+    CESIUM_TRY_END
+    return 0;
+}
+
+CESIUM_API void cesium_gltf_free_glb(uint8_t* data) {
+    delete[] data;
 }
 
 } // extern "C"
