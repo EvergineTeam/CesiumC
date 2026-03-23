@@ -92,7 +92,11 @@ void* CCallbackRendererResources::prepareRasterInLoadThread(
         return _callbacks.prepareRasterInLoadThread(
             _callbacks.userData,
             reinterpret_cast<const uint8_t*>(pixelData.data()),
-            pixelData.size());
+            pixelData.size(),
+            image.width,
+            image.height,
+            image.channels,
+            image.bytesPerChannel);
     }
     return nullptr;
 }

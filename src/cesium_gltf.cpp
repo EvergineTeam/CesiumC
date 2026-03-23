@@ -10,6 +10,11 @@
 #include <CesiumGltf/Model.h>
 #include <CesiumGltf/Accessor.h>
 #include <CesiumGltf/ImageAsset.h>
+#include <CesiumGltf/ExtensionKhrTextureTransform.h>
+#include <CesiumGltf/Material.h>
+#include <CesiumGltf/MaterialPBRMetallicRoughness.h>
+#include <CesiumGltf/Sampler.h>
+#include <CesiumGltf/Texture.h>
 #include <CesiumGltfReader/GltfReader.h>
 #include <CesiumGltfWriter/GltfWriter.h>
 #include <CesiumGltfContent/GltfUtilities.h>
@@ -655,29 +660,19 @@ CESIUM_API int cesium_gltf_image_get_data(
 
 // ---------- GLB serialization ----------
 
-CESIUM_API int cesium_gltf_model_write_glb(
-    const CesiumGltfModel* model,
-    uint8_t** out_data,
-    size_t* out_size)
+// Helper: encode images, collapse buffers, write GLB, allocate output.
+static int writeModelAsGlb(
+    Model& copy, uint8_t** out_data, size_t* out_size)
 {
-    if (!model || !out_data || !out_size) return 0;
-
-    CESIUM_TRY_BEGIN
-    // Copy the model so we can modify it for GLB export
-    Model copy = *asModel(model);
-
-    // Ensure at least one buffer exists
     if (copy.buffers.empty()) {
         copy.buffers.emplace_back();
     }
 
-    // Re-encode images that only exist as decoded ImageAssets (pAsset)
-    // but don't have valid encoded data in a buffer.
+    // Re-encode images that only exist as decoded ImageAssets
     for (Image& image : copy.images) {
         if (!image.pAsset || image.pAsset->pixelData.empty())
             continue;
 
-        // Check if existing bufferView reference already has valid data
         bool hasValidBufferData = false;
         if (image.bufferView >= 0 &&
             image.bufferView < static_cast<int32_t>(copy.bufferViews.size())) {
@@ -695,31 +690,26 @@ CESIUM_API int cesium_gltf_model_write_glb(
         if (hasValidBufferData)
             continue;
 
-        // Re-encode the decoded pixels as PNG
         std::vector<std::byte> pngData =
             CesiumGltfContent::ImageManipulation::savePng(*image.pAsset);
         if (pngData.empty())
             continue;
 
-        // Append PNG data to buffer[0]
         Buffer& buf = copy.buffers[0];
         int64_t offset = static_cast<int64_t>(buf.cesium.data.size());
         buf.cesium.data.insert(
             buf.cesium.data.end(), pngData.begin(), pngData.end());
 
-        // Create a new bufferView for this image
         BufferView& bv = copy.bufferViews.emplace_back();
         bv.buffer = 0;
         bv.byteOffset = offset;
         bv.byteLength = static_cast<int64_t>(pngData.size());
 
-        // Point the image to the new bufferView
         image.bufferView = static_cast<int32_t>(copy.bufferViews.size() - 1);
         image.mimeType = "image/png";
         image.uri = std::nullopt;
     }
-    
-    // Collapse all buffers into one for GLB
+
     CesiumGltfContent::GltfUtilities::collapseToSingleBuffer(copy);
 
     std::span<const std::byte> bufferData;
@@ -738,7 +728,6 @@ CESIUM_API int cesium_gltf_model_write_glb(
         return 0;
     }
 
-    // Transfer ownership to a heap allocation the caller can free
     auto size = result.gltfBytes.size();
     auto* data = new uint8_t[size];
     std::memcpy(data, result.gltfBytes.data(), size);
@@ -746,6 +735,166 @@ CESIUM_API int cesium_gltf_model_write_glb(
     *out_data = data;
     *out_size = size;
     return 1;
+}
+
+CESIUM_API int cesium_gltf_model_write_glb(
+    const CesiumGltfModel* model,
+    uint8_t** out_data,
+    size_t* out_size)
+{
+    if (!model || !out_data || !out_size) return 0;
+
+    CESIUM_TRY_BEGIN
+    Model copy = *asModel(model);
+    return writeModelAsGlb(copy, out_data, out_size);
+    CESIUM_TRY_END
+    return 0;
+}
+
+CESIUM_API int cesium_gltf_model_write_glb_with_overlays(
+    const CesiumGltfModel* model,
+    const CesiumRasterOverlayInfo* overlays,
+    int overlayCount,
+    uint8_t** out_data,
+    size_t* out_size)
+{
+    if (!model || !out_data || !out_size) return 0;
+    if (overlayCount > 0 && !overlays) return 0;
+
+    CESIUM_TRY_BEGIN
+    Model copy = *asModel(model);
+
+    if (copy.buffers.empty()) {
+        copy.buffers.emplace_back();
+    }
+
+    // Bake each overlay into the model following the same pattern as
+    // TestAddRasterOverlayToGltf.cpp in cesium-native.
+    for (int oi = 0; oi < overlayCount; ++oi) {
+        const auto& info = overlays[oi];
+        if (!info.pixelData || info.pixelDataSize == 0 ||
+            info.width <= 0 || info.height <= 0 || info.channels <= 0)
+            continue;
+
+        // Build an ImageAsset from the raw pixels so we can PNG-encode it.
+        CesiumGltf::ImageAsset asset;
+        asset.width = info.width;
+        asset.height = info.height;
+        asset.channels = info.channels;
+        asset.bytesPerChannel = info.bytesPerChannel > 0 ? info.bytesPerChannel : 1;
+        asset.pixelData.resize(info.pixelDataSize);
+        std::memcpy(
+            asset.pixelData.data(),
+            info.pixelData,
+            info.pixelDataSize);
+
+        // PNG-encode and append to buffer[0]
+        Buffer& buf = copy.buffers[0];
+        size_t imageStart = buf.cesium.data.size();
+        CesiumGltfContent::ImageManipulation::savePng(asset, buf.cesium.data);
+        size_t imageEnd = buf.cesium.data.size();
+        if (imageEnd == imageStart)
+            continue; // PNG encoding failed
+
+        // Create bufferView for the PNG data
+        BufferView& bv = copy.bufferViews.emplace_back();
+        bv.buffer = 0;
+        bv.byteOffset = static_cast<int64_t>(imageStart);
+        bv.byteLength = static_cast<int64_t>(imageEnd - imageStart);
+
+        // Create glTF Image pointing to this bufferView
+        Image& image = copy.images.emplace_back();
+        image.mimeType = Image::MimeType::image_png;
+        image.bufferView = static_cast<int32_t>(copy.bufferViews.size() - 1);
+
+        // Create sampler
+        Sampler& sampler = copy.samplers.emplace_back();
+        sampler.magFilter = Sampler::MagFilter::LINEAR;
+        sampler.minFilter = Sampler::MinFilter::LINEAR_MIPMAP_LINEAR;
+        sampler.wrapS = Sampler::WrapS::CLAMP_TO_EDGE;
+        sampler.wrapT = Sampler::WrapT::CLAMP_TO_EDGE;
+
+        // Create texture
+        Texture& texture = copy.textures.emplace_back();
+        texture.sampler = static_cast<int32_t>(copy.samplers.size() - 1);
+        texture.source = static_cast<int32_t>(copy.images.size() - 1);
+
+        int32_t textureIndex = static_cast<int32_t>(copy.textures.size() - 1);
+
+        // Build the _CESIUMOVERLAY_N attribute name
+        std::string overlayAttr =
+            "_CESIUMOVERLAY_" + std::to_string(info.textureCoordinateIndex);
+
+        // Set each primitive's material baseColorTexture to this overlay
+        int32_t newMaterialIndex = -1;
+        for (Mesh& mesh : copy.meshes) {
+            for (MeshPrimitive& primitive : mesh.primitives) {
+                // Only apply to primitives that have the matching overlay UVs
+                auto uvIt = primitive.attributes.find(overlayAttr);
+                if (uvIt == primitive.attributes.end())
+                    continue;
+
+                // Find the TEXCOORD_N index for this overlay attribute
+                int32_t texCoordIndex = -1;
+                for (const auto& [name, idx] : primitive.attributes) {
+                    if (idx == uvIt->second && name.rfind("TEXCOORD_", 0) == 0) {
+                        texCoordIndex = std::stoi(name.substr(9));
+                        break;
+                    }
+                }
+                // If not aliased to a TEXCOORD_N, use the overlay attr directly
+                // by assigning it as TEXCOORD_N
+                if (texCoordIndex < 0) {
+                    // Find the next free TEXCOORD_N
+                    texCoordIndex = 0;
+                    while (primitive.attributes.find(
+                               "TEXCOORD_" + std::to_string(texCoordIndex)) !=
+                           primitive.attributes.end()) {
+                        ++texCoordIndex;
+                    }
+                    primitive.attributes["TEXCOORD_" + std::to_string(texCoordIndex)] =
+                        uvIt->second;
+                }
+
+                // Ensure the primitive has a material
+                if (primitive.material < 0 ||
+                    static_cast<size_t>(primitive.material) >= copy.materials.size()) {
+                    if (newMaterialIndex < 0) {
+                        newMaterialIndex = static_cast<int32_t>(copy.materials.size());
+                        Material& mat = copy.materials.emplace_back();
+                        auto& pbr = mat.pbrMetallicRoughness.emplace();
+                        pbr.metallicFactor = 0.0;
+                        pbr.roughnessFactor = 1.0;
+                    }
+                    primitive.material = newMaterialIndex;
+                }
+
+                Material& material = copy.materials[static_cast<size_t>(primitive.material)];
+                if (!material.pbrMetallicRoughness)
+                    material.pbrMetallicRoughness.emplace();
+                if (!material.pbrMetallicRoughness->baseColorTexture)
+                    material.pbrMetallicRoughness->baseColorTexture.emplace();
+
+                TextureInfo& colorTexture =
+                    *material.pbrMetallicRoughness->baseColorTexture;
+                colorTexture.index = textureIndex;
+                colorTexture.texCoord = texCoordIndex;
+
+                auto& textureTransform =
+                    colorTexture.addExtension<ExtensionKhrTextureTransform>();
+                textureTransform.offset = {
+                    static_cast<double>(info.translation.x),
+                    static_cast<double>(info.translation.y)};
+                textureTransform.scale = {
+                    static_cast<double>(info.scale.x),
+                    static_cast<double>(info.scale.y)};
+            }
+        }
+
+        buf.byteLength = static_cast<int64_t>(buf.cesium.data.size());
+    }
+
+    return writeModelAsGlb(copy, out_data, out_size);
     CESIUM_TRY_END
     return 0;
 }
