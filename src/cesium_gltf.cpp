@@ -13,7 +13,6 @@
 #include <CesiumGltfReader/GltfReader.h>
 #include <CesiumGltfWriter/GltfWriter.h>
 #include <CesiumGltfContent/GltfUtilities.h>
-#include <CesiumGltfContent/ImageManipulation.h>
 
 #include <cstddef>
 #include <cstring>
@@ -663,63 +662,8 @@ CESIUM_API int cesium_gltf_model_write_glb(
     if (!model || !out_data || !out_size) return 0;
 
     CESIUM_TRY_BEGIN
-    // Copy the model so we can modify it for GLB export
+    // Copy the model so we can collapse all buffers into one for GLB
     Model copy = *asModel(model);
-
-    // Ensure at least one buffer exists
-    if (copy.buffers.empty()) {
-        copy.buffers.emplace_back();
-    }
-
-    // Re-encode images that only exist as decoded ImageAssets (pAsset)
-    // but don't have valid encoded data in a buffer.
-    for (Image& image : copy.images) {
-        if (!image.pAsset || image.pAsset->pixelData.empty())
-            continue;
-
-        // Check if existing bufferView reference already has valid data
-        bool hasValidBufferData = false;
-        if (image.bufferView >= 0 &&
-            image.bufferView < static_cast<int32_t>(copy.bufferViews.size())) {
-            const auto& bv = copy.bufferViews[image.bufferView];
-            if (bv.buffer >= 0 &&
-                bv.buffer < static_cast<int32_t>(copy.buffers.size())) {
-                const auto& buf = copy.buffers[bv.buffer];
-                if (bv.byteOffset + bv.byteLength <=
-                    static_cast<int64_t>(buf.cesium.data.size())) {
-                    hasValidBufferData = true;
-                }
-            }
-        }
-
-        if (hasValidBufferData)
-            continue;
-
-        // Re-encode the decoded pixels as PNG
-        std::vector<std::byte> pngData =
-            CesiumGltfContent::ImageManipulation::savePng(*image.pAsset);
-        if (pngData.empty())
-            continue;
-
-        // Append PNG data to buffer[0]
-        Buffer& buf = copy.buffers[0];
-        int64_t offset = static_cast<int64_t>(buf.cesium.data.size());
-        buf.cesium.data.insert(
-            buf.cesium.data.end(), pngData.begin(), pngData.end());
-
-        // Create a new bufferView for this image
-        BufferView& bv = copy.bufferViews.emplace_back();
-        bv.buffer = 0;
-        bv.byteOffset = offset;
-        bv.byteLength = static_cast<int64_t>(pngData.size());
-
-        // Point the image to the new bufferView
-        image.bufferView = static_cast<int32_t>(copy.bufferViews.size() - 1);
-        image.mimeType = "image/png";
-        image.uri = std::nullopt;
-    }
-    
-    // Collapse all buffers into one for GLB
     CesiumGltfContent::GltfUtilities::collapseToSingleBuffer(copy);
 
     std::span<const std::byte> bufferData;
