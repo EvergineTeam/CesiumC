@@ -92,7 +92,7 @@ void* CCallbackRendererResources::prepareRasterInLoadThread(
         return _callbacks.prepareRasterInLoadThread(
             _callbacks.userData,
             reinterpret_cast<const uint8_t*>(pixelData.data()),
-            image.sizeBytes, 
+            image.sizeBytes < 0 ? pixelData.size() : static_cast<size_t>(image.sizeBytes), 
             image.width,
             image.height,
             image.channels,
