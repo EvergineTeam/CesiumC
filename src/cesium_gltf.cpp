@@ -15,6 +15,7 @@
 #include <CesiumGltfContent/GltfUtilities.h>
 
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 #include <string>
@@ -664,6 +665,37 @@ CESIUM_API int cesium_gltf_model_write_glb(
     CESIUM_TRY_BEGIN
     // Copy the model so we can collapse all buffers into one for GLB
     Model copy = *asModel(model);
+
+    // Rename _CESIUMOVERLAY_N attributes to TEXCOORD_N so standard glTF
+    // loaders recognise them as texture coordinates.
+    for (auto& mesh : copy.meshes) {
+        for (auto& primitive : mesh.primitives) {
+            // Find the next free TEXCOORD index already present
+            int32_t nextTexCoord = 0;
+            for (const auto& [name, _] : primitive.attributes) {
+                if (name.rfind("TEXCOORD_", 0) == 0) {
+                    int32_t idx = std::atoi(name.c_str() + 9);
+                    if (idx >= nextTexCoord)
+                        nextTexCoord = idx + 1;
+                }
+            }
+            
+            std::vector<std::pair<std::string, int32_t>> overlays;
+            for (auto it = primitive.attributes.begin(); it != primitive.attributes.end();) {
+                if (it->first.rfind("_CESIUMOVERLAY_", 0) == 0) {
+                    overlays.push_back(*it);
+                    it = primitive.attributes.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            for (const auto& [oldName, accessorIdx] : overlays) {
+                std::string newName = "TEXCOORD_" + std::to_string(nextTexCoord++);
+                primitive.attributes[newName] = accessorIdx;
+            }
+        }
+    }
+
     CesiumGltfContent::GltfUtilities::collapseToSingleBuffer(copy);
 
     std::span<const std::byte> bufferData;
