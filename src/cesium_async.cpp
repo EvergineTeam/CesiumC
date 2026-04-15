@@ -80,7 +80,14 @@ private:
 
 #include "cesium_wrappers.h"
 
+#include <Cesium3DTilesContent/registerAllTileContentTypes.h>
+
+static std::once_flag g_contentTypesRegistered;
+
 static AsyncSystemWrapper* createAsyncSystemWrapper() {
+    std::call_once(g_contentTypesRegistered, []() {
+        Cesium3DTilesContent::registerAllTileContentTypes();
+    });
     auto pTP = std::make_shared<ThreadPoolTaskProcessor>();
     auto* w = new AsyncSystemWrapper{pTP, CesiumAsync::AsyncSystem(pTP)};
     return w;

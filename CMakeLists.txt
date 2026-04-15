@@ -55,6 +55,7 @@ target_link_libraries(CesiumNativeC
         CesiumGltfReader
         CesiumGltfWriter
         CesiumGltfContent
+        Cesium3DTilesContent
         CesiumJsonWriter
         CesiumUtility
         Cesium3DTilesSelection
