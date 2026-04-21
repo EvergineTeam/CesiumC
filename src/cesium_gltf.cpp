@@ -730,4 +730,59 @@ CESIUM_API void cesium_gltf_free_glb(uint8_t* data) {
     delete[] data;
 }
 
+// ---------- Strip feature IDs / structural metadata ----------
+
+static inline Model* asMutableModel(CesiumGltfModel* h) {
+    return reinterpret_cast<Model*>(h);
+}
+
+CESIUM_API void cesium_gltf_model_strip_feature_ids(CesiumGltfModel* model) {
+    if (!model) return;
+    CESIUM_TRY_BEGIN
+
+    Model* m = asMutableModel(model);
+
+    for (auto& mesh : m->meshes) {
+        for (auto& primitive : mesh.primitives) {
+            // Remove _FEATURE_ID_* attributes
+            for (auto it = primitive.attributes.begin();
+                 it != primitive.attributes.end();) {
+                if (it->first.rfind("_FEATURE_ID_", 0) == 0) {
+                    it = primitive.attributes.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            // Remove EXT_mesh_features from primitive
+            primitive.extensions.erase("EXT_mesh_features");
+
+            // Remove EXT_structural_metadata from primitive
+            primitive.extensions.erase("EXT_structural_metadata");
+        }
+    }
+
+    // Remove EXT_structural_metadata from model root
+    m->extensions.erase("EXT_structural_metadata");
+
+    // Clean up extensionsUsed / extensionsRequired
+    auto removeFromVec = [](std::vector<std::string>& vec, const char* name) {
+        vec.erase(
+            std::remove(vec.begin(), vec.end(), name),
+            vec.end());
+    };
+    removeFromVec(m->extensionsUsed, "EXT_mesh_features");
+    removeFromVec(m->extensionsUsed, "EXT_structural_metadata");
+    removeFromVec(m->extensionsRequired, "EXT_mesh_features");
+    removeFromVec(m->extensionsRequired, "EXT_structural_metadata");
+
+    // Remove orphaned accessors, bufferViews, buffers and compact buffer data
+    CesiumGltfContent::GltfUtilities::removeUnusedAccessors(*m);
+    CesiumGltfContent::GltfUtilities::removeUnusedBufferViews(*m);
+    CesiumGltfContent::GltfUtilities::removeUnusedBuffers(*m);
+    CesiumGltfContent::GltfUtilities::compactBuffers(*m);
+
+    CESIUM_TRY_END
+}
+
 } // extern "C"
