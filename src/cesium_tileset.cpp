@@ -279,74 +279,63 @@ static const ViewUpdateResult* asResult(const CesiumViewUpdateResult* h) {
 CESIUM_API int cesium_view_update_result_get_tiles_to_render_count(
     const CesiumViewUpdateResult* result)
 {
-    if (!result) return 0;
     return static_cast<int>(asResult(result)->tilesToRenderThisFrame.size());
 }
 
 CESIUM_API const CesiumTile* cesium_view_update_result_get_tile_to_render(
     const CesiumViewUpdateResult* result, int index)
 {
-    if (!result) return nullptr;
     const auto& tiles = asResult(result)->tilesToRenderThisFrame;
-    if (index < 0 || index >= static_cast<int>(tiles.size())) return nullptr;
     return reinterpret_cast<const CesiumTile*>(tiles[static_cast<size_t>(index)].get());
 }
 
 CESIUM_API int cesium_view_update_result_get_tiles_fading_out_count(
     const CesiumViewUpdateResult* result)
 {
-    if (!result) return 0;
     return static_cast<int>(asResult(result)->tilesFadingOut.size());
 }
 
 CESIUM_API const CesiumTile* cesium_view_update_result_get_tile_fading_out(
     const CesiumViewUpdateResult* result, int index)
 {
-    if (!result) return nullptr;
     const auto& tiles = asResult(result)->tilesFadingOut;
-    if (index < 0 || index >= static_cast<int>(tiles.size())) return nullptr;
-    return reinterpret_cast<const CesiumTile*>(tiles[static_cast<size_t>(index)].get());
+    auto it = std::next(tiles.begin(), index);
+    return reinterpret_cast<const CesiumTile*>(it->get());
 }
 
 CESIUM_API int32_t cesium_view_update_result_get_frame_number(
     const CesiumViewUpdateResult* result)
 {
-    if (!result) return 0;
     return asResult(result)->frameNumber;
 }
 
 CESIUM_API uint32_t cesium_view_update_result_get_tiles_visited(
     const CesiumViewUpdateResult* result)
 {
-    if (!result) return 0;
     return asResult(result)->tilesVisited;
 }
 
 CESIUM_API uint32_t cesium_view_update_result_get_tiles_culled(
     const CesiumViewUpdateResult* result)
 {
-    if (!result) return 0;
     return asResult(result)->tilesCulled;
 }
 
 CESIUM_API uint32_t cesium_view_update_result_get_max_depth_visited(
     const CesiumViewUpdateResult* result)
 {
-    if (!result) return 0;
     return asResult(result)->maxDepthVisited;
 }
 
 CESIUM_API int32_t cesium_view_update_result_get_worker_thread_load_queue_length(
     const CesiumViewUpdateResult* result)
 {
-    if (!result) return 0;
     return asResult(result)->workerThreadTileLoadQueueLength;
 }
 
 CESIUM_API int32_t cesium_view_update_result_get_main_thread_load_queue_length(
     const CesiumViewUpdateResult* result)
 {
-    if (!result) return 0;
     return asResult(result)->mainThreadTileLoadQueueLength;
 }
 

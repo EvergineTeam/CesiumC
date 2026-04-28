@@ -11,27 +11,22 @@
 #include <CesiumGltf/ImageAsset.h>
 #include <CesiumRasterOverlays/RasterOverlayTile.h>
 
-#include <cstring>
 #include <variant>
 
 CCallbackRendererResources::CCallbackRendererResources(
     const CesiumRendererResourceCallbacks& callbacks)
-    : _callbacks(callbacks), _hasCallbacks(true) {}
+    : _callbacks(callbacks) {}
 
 CCallbackRendererResources::CCallbackRendererResources()
-    : _callbacks{}, _hasCallbacks(false) {
-    std::memset(&_callbacks, 0, sizeof(_callbacks));
-}
+    : _callbacks{} {}
 
 void CCallbackRendererResources::setCallbacks(
     const CesiumRendererResourceCallbacks& callbacks) {
     _callbacks = callbacks;
-    _hasCallbacks = true;
 }
 
 void CCallbackRendererResources::clearCallbacks() {
-    std::memset(&_callbacks, 0, sizeof(_callbacks));
-    _hasCallbacks = false;
+    _callbacks = {};
 }
 
 CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources>
@@ -43,7 +38,7 @@ CCallbackRendererResources::prepareInLoadThread(
 {
     void* pResources = nullptr;
 
-    if (_hasCallbacks && _callbacks.prepareInLoadThread) {
+    if (_callbacks.prepareInLoadThread) {
         // Extract the glTF model if present
         auto* pModel = std::get_if<CesiumGltf::Model>(&tileLoadResult.contentKind);
         if (pModel) {
@@ -63,7 +58,7 @@ void* CCallbackRendererResources::prepareInMainThread(
     Cesium3DTilesSelection::Tile& tile,
     void* pLoadThreadResult)
 {
-    if (_hasCallbacks && _callbacks.prepareInMainThread) {
+    if (_callbacks.prepareInMainThread) {
         auto* cTile = reinterpret_cast<const CesiumTile*>(&tile);
         return _callbacks.prepareInMainThread(
             _callbacks.userData, cTile, pLoadThreadResult);
@@ -76,7 +71,7 @@ void CCallbackRendererResources::free(
     void* pLoadThreadResult,
     void* pMainThreadResult) noexcept
 {
-    if (_hasCallbacks && _callbacks.freeResources) {
+    if (_callbacks.freeResources) {
         auto* cTile = reinterpret_cast<const CesiumTile*>(&tile);
         _callbacks.freeResources(
             _callbacks.userData, cTile, pLoadThreadResult, pMainThreadResult);
@@ -87,7 +82,7 @@ void* CCallbackRendererResources::prepareRasterInLoadThread(
     CesiumGltf::ImageAsset& image,
     const std::any& /*rendererOptions*/)
 {
-    if (_hasCallbacks && _callbacks.prepareRasterInLoadThread) {
+    if (_callbacks.prepareRasterInLoadThread) {
         const auto& pixelData = image.pixelData;
         return _callbacks.prepareRasterInLoadThread(
             _callbacks.userData,
@@ -105,7 +100,7 @@ void* CCallbackRendererResources::prepareRasterInMainThread(
     CesiumRasterOverlays::RasterOverlayTile& /*rasterTile*/,
     void* pLoadThreadResult)
 {
-    if (_hasCallbacks && _callbacks.prepareRasterInMainThread) {
+    if (_callbacks.prepareRasterInMainThread) {
         return _callbacks.prepareRasterInMainThread(
             _callbacks.userData, pLoadThreadResult);
     }
@@ -117,7 +112,7 @@ void CCallbackRendererResources::freeRaster(
     void* /*pLoadThreadResult*/,
     void* pMainThreadResult) noexcept
 {
-    if (_hasCallbacks && _callbacks.freeRasterResources) {
+    if (_callbacks.freeRasterResources) {
         _callbacks.freeRasterResources(_callbacks.userData, pMainThreadResult);
     }
 }
@@ -130,7 +125,7 @@ void CCallbackRendererResources::attachRasterInMainThread(
     const glm::dvec2& translation,
     const glm::dvec2& scale)
 {
-    if (_hasCallbacks && _callbacks.attachRasterInMainThread) {
+    if (_callbacks.attachRasterInMainThread) {
         auto* cTile = reinterpret_cast<const CesiumTile*>(&tile);
         _callbacks.attachRasterInMainThread(
             _callbacks.userData,
@@ -148,7 +143,7 @@ void CCallbackRendererResources::detachRasterInMainThread(
     const CesiumRasterOverlays::RasterOverlayTile& /*rasterTile*/,
     void* pMainThreadRendererResources) noexcept
 {
-    if (_hasCallbacks && _callbacks.detachRasterInMainThread) {
+    if (_callbacks.detachRasterInMainThread) {
         auto* cTile = reinterpret_cast<const CesiumTile*>(&tile);
         _callbacks.detachRasterInMainThread(
             _callbacks.userData,

@@ -62,7 +62,7 @@ CESIUM_API const char* cesium_credit_system_get_credit_to_show_on_screen(
     CESIUM_TRY_BEGIN
     const auto* wrapper =
         reinterpret_cast<const CreditSystemWrapper*>(creditSystem);
-    if (index < 0 || index >= static_cast<int>(wrapper->cachedCredits.size()))
+    if (static_cast<unsigned>(index) >= wrapper->cachedCredits.size())
         return nullptr;
     return wrapper->cachedCredits[static_cast<size_t>(index)].c_str();
     CESIUM_TRY_END

@@ -296,7 +296,7 @@ CESIUM_API int64_t cesium_ion_asset_list_get_asset_id(
 {
     if (!list) return -1;
     auto* wrapper = reinterpret_cast<const IonAssetListWrapper*>(list);
-    if (index < 0 || index >= static_cast<int>(wrapper->assets.items.size()))
+    if (static_cast<unsigned>(index) >= wrapper->assets.items.size())
         return -1;
     return wrapper->assets.items[static_cast<size_t>(index)].id;
 }
@@ -306,7 +306,7 @@ CESIUM_API const char* cesium_ion_asset_list_get_asset_name(
 {
     if (!list) return nullptr;
     auto* wrapper = reinterpret_cast<const IonAssetListWrapper*>(list);
-    if (index < 0 || index >= static_cast<int>(wrapper->assets.items.size()))
+    if (static_cast<unsigned>(index) >= wrapper->assets.items.size())
         return nullptr;
     return wrapper->assets.items[static_cast<size_t>(index)].name.c_str();
 }
@@ -316,7 +316,7 @@ CESIUM_API const char* cesium_ion_asset_list_get_asset_type(
 {
     if (!list) return nullptr;
     auto* wrapper = reinterpret_cast<const IonAssetListWrapper*>(list);
-    if (index < 0 || index >= static_cast<int>(wrapper->assets.items.size()))
+    if (static_cast<unsigned>(index) >= wrapper->assets.items.size())
         return nullptr;
     return wrapper->assets.items[static_cast<size_t>(index)].type.c_str();
 }
@@ -366,7 +366,7 @@ CESIUM_API const char* cesium_ion_token_list_get_token_name(
 {
     if (!list) return nullptr;
     auto* wrapper = reinterpret_cast<const IonTokenListWrapper*>(list);
-    if (index < 0 || index >= static_cast<int>(wrapper->tokenList.items.size()))
+    if (static_cast<unsigned>(index) >= wrapper->tokenList.items.size())
         return nullptr;
     return wrapper->tokenList.items[static_cast<size_t>(index)].name.c_str();
 }
@@ -376,7 +376,7 @@ CESIUM_API const char* cesium_ion_token_list_get_token_value(
 {
     if (!list) return nullptr;
     auto* wrapper = reinterpret_cast<const IonTokenListWrapper*>(list);
-    if (index < 0 || index >= static_cast<int>(wrapper->tokenList.items.size()))
+    if (static_cast<unsigned>(index) >= wrapper->tokenList.items.size())
         return nullptr;
     return wrapper->tokenList.items[static_cast<size_t>(index)].token.c_str();
 }

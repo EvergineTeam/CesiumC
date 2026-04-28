@@ -113,8 +113,8 @@ CESIUM_API const char* cesium_gltf_reader_result_get_error(
 {
     if (!result) return "";
     const auto& errors = asResult(result)->result.errors;
-    if (index < 0 || index >= static_cast<int>(errors.size())) return "";
-    return errors[index].c_str();
+    if (static_cast<unsigned>(index) >= errors.size()) return "";
+    return errors[static_cast<size_t>(index)].c_str();
 }
 
 CESIUM_API int cesium_gltf_reader_result_get_warning_count(const CesiumCGltfReaderResult* result) {
@@ -128,8 +128,8 @@ CESIUM_API const char* cesium_gltf_reader_result_get_warning(
 {
     if (!result) return "";
     const auto& warnings = asResult(result)->result.warnings;
-    if (index < 0 || index >= static_cast<int>(warnings.size())) return "";
-    return warnings[index].c_str();
+    if (static_cast<unsigned>(index) >= warnings.size()) return "";
+    return warnings[static_cast<size_t>(index)].c_str();
 }
 
 // ---------- Model accessors ----------
@@ -142,7 +142,6 @@ CESIUM_API const CesiumGltfModel* cesium_gltf_reader_result_get_model(
 }
 
 CESIUM_API int cesium_gltf_model_get_mesh_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->meshes.size());
 }
 
@@ -150,72 +149,66 @@ CESIUM_API const char* cesium_gltf_model_get_mesh_name(
     const CesiumGltfModel* model,
     int meshIndex)
 {
-    if (!model) return "";
-    const auto& meshes = asModel(model)->meshes;
-    if (meshIndex < 0 || meshIndex >= static_cast<int>(meshes.size())) return "";
-    return meshes[meshIndex].name.c_str();
+    return asModel(model)->meshes[meshIndex].name.c_str();
 }
 
 CESIUM_API int cesium_gltf_model_get_material_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->materials.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_texture_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->textures.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_image_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->images.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_node_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->nodes.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_accessor_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->accessors.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_buffer_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->buffers.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_buffer_view_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->bufferViews.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_scene_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->scenes.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_animation_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->animations.size());
 }
 
 CESIUM_API int cesium_gltf_model_get_skin_count(const CesiumGltfModel* model) {
-    if (!model) return 0;
     return static_cast<int>(asModel(model)->skins.size());
 }
 
 // ---------- Mesh / Primitive accessors ----------
 
+// Resolve mesh+primitive indices to a Primitive pointer. Returns nullptr on bad indices.
+static inline const MeshPrimitive* getPrimitive(
+    const Model* m, int meshIndex, int primitiveIndex)
+{
+    if (static_cast<unsigned>(meshIndex) >= m->meshes.size()) return nullptr;
+    const auto& prims = m->meshes[meshIndex].primitives;
+    if (static_cast<unsigned>(primitiveIndex) >= prims.size()) return nullptr;
+    return &prims[primitiveIndex];
+}
+
 CESIUM_API int cesium_gltf_mesh_get_primitive_count(
     const CesiumGltfModel* model,
     int meshIndex)
 {
-    if (!model) return 0;
-    const auto& meshes = asModel(model)->meshes;
-    if (meshIndex < 0 || meshIndex >= static_cast<int>(meshes.size())) return 0;
-    return static_cast<int>(meshes[meshIndex].primitives.size());
+    return static_cast<int>(asModel(model)->meshes[meshIndex].primitives.size());
 }
 
 CESIUM_API int cesium_gltf_primitive_get_mode(
@@ -223,12 +216,8 @@ CESIUM_API int cesium_gltf_primitive_get_mode(
     int meshIndex,
     int primitiveIndex)
 {
-    if (!model) return 4; // TRIANGLES default
-    const auto& meshes = asModel(model)->meshes;
-    if (meshIndex < 0 || meshIndex >= static_cast<int>(meshes.size())) return 4;
-    const auto& prims = meshes[meshIndex].primitives;
-    if (primitiveIndex < 0 || primitiveIndex >= static_cast<int>(prims.size())) return 4;
-    return prims[primitiveIndex].mode;
+    const auto* prim = getPrimitive(asModel(model), meshIndex, primitiveIndex);
+    return prim ? prim->mode : 4;
 }
 
 CESIUM_API int cesium_gltf_primitive_get_material_index(
@@ -236,12 +225,8 @@ CESIUM_API int cesium_gltf_primitive_get_material_index(
     int meshIndex,
     int primitiveIndex)
 {
-    if (!model) return -1;
-    const auto& meshes = asModel(model)->meshes;
-    if (meshIndex < 0 || meshIndex >= static_cast<int>(meshes.size())) return -1;
-    const auto& prims = meshes[meshIndex].primitives;
-    if (primitiveIndex < 0 || primitiveIndex >= static_cast<int>(prims.size())) return -1;
-    return prims[primitiveIndex].material;
+    const auto* prim = getPrimitive(asModel(model), meshIndex, primitiveIndex);
+    return prim ? prim->material : -1;
 }
 
 CESIUM_API int cesium_gltf_primitive_get_indices_accessor_index(
@@ -249,12 +234,8 @@ CESIUM_API int cesium_gltf_primitive_get_indices_accessor_index(
     int meshIndex,
     int primitiveIndex)
 {
-    if (!model) return -1;
-    const auto& meshes = asModel(model)->meshes;
-    if (meshIndex < 0 || meshIndex >= static_cast<int>(meshes.size())) return -1;
-    const auto& prims = meshes[meshIndex].primitives;
-    if (primitiveIndex < 0 || primitiveIndex >= static_cast<int>(prims.size())) return -1;
-    return prims[primitiveIndex].indices;
+    const auto* prim = getPrimitive(asModel(model), meshIndex, primitiveIndex);
+    return prim ? prim->indices : -1;
 }
 
 CESIUM_API int cesium_gltf_primitive_get_attribute_count(
@@ -262,27 +243,8 @@ CESIUM_API int cesium_gltf_primitive_get_attribute_count(
     int meshIndex,
     int primitiveIndex)
 {
-    if (!model) return 0;
-    const auto& meshes = asModel(model)->meshes;
-    if (meshIndex < 0 || meshIndex >= static_cast<int>(meshes.size())) return 0;
-    const auto& prims = meshes[meshIndex].primitives;
-    if (primitiveIndex < 0 || primitiveIndex >= static_cast<int>(prims.size())) return 0;
-    return static_cast<int>(prims[primitiveIndex].attributes.size());
-}
-
-// Helper to get the Nth entry from the attributes map by iteration order.
-static const std::pair<const std::string, int32_t>* getNthAttribute(
-    const Model* m, int meshIndex, int primitiveIndex, int attributeIndex)
-{
-    const auto& meshes = m->meshes;
-    if (meshIndex < 0 || meshIndex >= static_cast<int>(meshes.size())) return nullptr;
-    const auto& prims = meshes[meshIndex].primitives;
-    if (primitiveIndex < 0 || primitiveIndex >= static_cast<int>(prims.size())) return nullptr;
-    const auto& attrs = prims[primitiveIndex].attributes;
-    if (attributeIndex < 0 || attributeIndex >= static_cast<int>(attrs.size())) return nullptr;
-    auto it = attrs.begin();
-    std::advance(it, attributeIndex);
-    return &(*it);
+    const auto* prim = getPrimitive(asModel(model), meshIndex, primitiveIndex);
+    return prim ? static_cast<int>(prim->attributes.size()) : 0;
 }
 
 CESIUM_API const char* cesium_gltf_primitive_get_attribute_name(
@@ -291,9 +253,11 @@ CESIUM_API const char* cesium_gltf_primitive_get_attribute_name(
     int primitiveIndex,
     int attributeIndex)
 {
-    if (!model) return "";
-    const auto* entry = getNthAttribute(asModel(model), meshIndex, primitiveIndex, attributeIndex);
-    return entry ? entry->first.c_str() : "";
+    const auto* prim = getPrimitive(asModel(model), meshIndex, primitiveIndex);
+    if (!prim || static_cast<unsigned>(attributeIndex) >= prim->attributes.size()) return "";
+    auto it = prim->attributes.begin();
+    std::advance(it, attributeIndex);
+    return it->first.c_str();
 }
 
 CESIUM_API int cesium_gltf_primitive_get_attribute_accessor_index(
@@ -302,9 +266,11 @@ CESIUM_API int cesium_gltf_primitive_get_attribute_accessor_index(
     int primitiveIndex,
     int attributeIndex)
 {
-    if (!model) return -1;
-    const auto* entry = getNthAttribute(asModel(model), meshIndex, primitiveIndex, attributeIndex);
-    return entry ? entry->second : -1;
+    const auto* prim = getPrimitive(asModel(model), meshIndex, primitiveIndex);
+    if (!prim || static_cast<unsigned>(attributeIndex) >= prim->attributes.size()) return -1;
+    auto it = prim->attributes.begin();
+    std::advance(it, attributeIndex);
+    return it->second;
 }
 
 CESIUM_API int cesium_gltf_primitive_find_attribute_accessor_index(
@@ -313,14 +279,11 @@ CESIUM_API int cesium_gltf_primitive_find_attribute_accessor_index(
     int primitiveIndex,
     const char* attributeName)
 {
-    if (!model || !attributeName) return -1;
-    const auto& meshes = asModel(model)->meshes;
-    if (meshIndex < 0 || meshIndex >= static_cast<int>(meshes.size())) return -1;
-    const auto& prims = meshes[meshIndex].primitives;
-    if (primitiveIndex < 0 || primitiveIndex >= static_cast<int>(prims.size())) return -1;
-    const auto& attrs = prims[primitiveIndex].attributes;
-    auto it = attrs.find(attributeName);
-    return (it != attrs.end()) ? it->second : -1;
+    if (!attributeName) return -1;
+    const auto* prim = getPrimitive(asModel(model), meshIndex, primitiveIndex);
+    if (!prim) return -1;
+    auto it = prim->attributes.find(attributeName);
+    return (it != prim->attributes.end()) ? it->second : -1;
 }
 
 // ---------- Accessor data resolution ----------
@@ -330,16 +293,13 @@ CESIUM_API int cesium_gltf_accessor_get_data(
     int accessorIndex,
     CesiumAccessorData* out)
 {
-    if (!model || !out) return 0;
     const auto* m = asModel(model);
-    if (accessorIndex < 0 || accessorIndex >= static_cast<int>(m->accessors.size())) return 0;
-
     const auto& accessor = m->accessors[accessorIndex];
-    if (accessor.bufferView < 0 || accessor.bufferView >= static_cast<int>(m->bufferViews.size()))
+    if (static_cast<unsigned>(accessor.bufferView) >= m->bufferViews.size())
         return 0;
 
     const auto& bufferView = m->bufferViews[accessor.bufferView];
-    if (bufferView.buffer < 0 || bufferView.buffer >= static_cast<int>(m->buffers.size()))
+    if (static_cast<unsigned>(bufferView.buffer) >= m->buffers.size())
         return 0;
 
     const auto& buffer = m->buffers[bufferView.buffer];
@@ -369,7 +329,6 @@ CESIUM_API int cesium_gltf_accessor_get_data(
 // ---------- Scene graph / Node accessors ----------
 
 CESIUM_API int cesium_gltf_model_get_default_scene(const CesiumGltfModel* model) {
-    if (!model) return -1;
     return asModel(model)->scene;
 }
 
@@ -377,10 +336,7 @@ CESIUM_API int cesium_gltf_scene_get_node_count(
     const CesiumGltfModel* model,
     int sceneIndex)
 {
-    if (!model) return 0;
-    const auto& scenes = asModel(model)->scenes;
-    if (sceneIndex < 0 || sceneIndex >= static_cast<int>(scenes.size())) return 0;
-    return static_cast<int>(scenes[sceneIndex].nodes.size());
+    return static_cast<int>(asModel(model)->scenes[sceneIndex].nodes.size());
 }
 
 CESIUM_API int cesium_gltf_scene_get_node(
@@ -388,32 +344,21 @@ CESIUM_API int cesium_gltf_scene_get_node(
     int sceneIndex,
     int index)
 {
-    if (!model) return -1;
-    const auto& scenes = asModel(model)->scenes;
-    if (sceneIndex < 0 || sceneIndex >= static_cast<int>(scenes.size())) return -1;
-    const auto& nodes = scenes[sceneIndex].nodes;
-    if (index < 0 || index >= static_cast<int>(nodes.size())) return -1;
-    return nodes[index];
+    return asModel(model)->scenes[sceneIndex].nodes[index];
 }
 
 CESIUM_API int cesium_gltf_node_get_mesh(
     const CesiumGltfModel* model,
     int nodeIndex)
 {
-    if (!model) return -1;
-    const auto& nodes = asModel(model)->nodes;
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(nodes.size())) return -1;
-    return nodes[nodeIndex].mesh;
+    return asModel(model)->nodes[nodeIndex].mesh;
 }
 
 CESIUM_API int cesium_gltf_node_get_children_count(
     const CesiumGltfModel* model,
     int nodeIndex)
 {
-    if (!model) return 0;
-    const auto& nodes = asModel(model)->nodes;
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(nodes.size())) return 0;
-    return static_cast<int>(nodes[nodeIndex].children.size());
+    return static_cast<int>(asModel(model)->nodes[nodeIndex].children.size());
 }
 
 CESIUM_API int cesium_gltf_node_get_child(
@@ -421,12 +366,7 @@ CESIUM_API int cesium_gltf_node_get_child(
     int nodeIndex,
     int childIndex)
 {
-    if (!model) return -1;
-    const auto& nodes = asModel(model)->nodes;
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(nodes.size())) return -1;
-    const auto& children = nodes[nodeIndex].children;
-    if (childIndex < 0 || childIndex >= static_cast<int>(children.size())) return -1;
-    return children[childIndex];
+    return asModel(model)->nodes[nodeIndex].children[childIndex];
 }
 
 CESIUM_API int cesium_gltf_node_get_matrix(
@@ -434,9 +374,7 @@ CESIUM_API int cesium_gltf_node_get_matrix(
     int nodeIndex,
     double out[16])
 {
-    if (!model || !out) return 0;
     const auto& nodes = asModel(model)->nodes;
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(nodes.size())) return 0;
     const auto& mat = nodes[nodeIndex].matrix;
     if (mat.size() == 16) {
         std::memcpy(out, mat.data(), 16 * sizeof(double));
@@ -465,13 +403,7 @@ CESIUM_API void cesium_gltf_node_get_translation(
     int nodeIndex,
     double out[3])
 {
-    if (!model || !out) return;
-    const auto& nodes = asModel(model)->nodes;
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(nodes.size())) {
-        out[0] = out[1] = out[2] = 0.0;
-        return;
-    }
-    const auto& t = nodes[nodeIndex].translation;
+    const auto& t = asModel(model)->nodes[nodeIndex].translation;
     if (t.size() == 3) {
         out[0] = t[0]; out[1] = t[1]; out[2] = t[2];
     } else {
@@ -484,13 +416,7 @@ CESIUM_API void cesium_gltf_node_get_rotation(
     int nodeIndex,
     double out[4])
 {
-    if (!model || !out) return;
-    const auto& nodes = asModel(model)->nodes;
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(nodes.size())) {
-        out[0] = out[1] = out[2] = 0.0; out[3] = 1.0;
-        return;
-    }
-    const auto& r = nodes[nodeIndex].rotation;
+    const auto& r = asModel(model)->nodes[nodeIndex].rotation;
     if (r.size() == 4) {
         out[0] = r[0]; out[1] = r[1]; out[2] = r[2]; out[3] = r[3];
     } else {
@@ -503,13 +429,7 @@ CESIUM_API void cesium_gltf_node_get_scale(
     int nodeIndex,
     double out[3])
 {
-    if (!model || !out) return;
-    const auto& nodes = asModel(model)->nodes;
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(nodes.size())) {
-        out[0] = out[1] = out[2] = 1.0;
-        return;
-    }
-    const auto& s = nodes[nodeIndex].scale;
+    const auto& s = asModel(model)->nodes[nodeIndex].scale;
     if (s.size() == 3) {
         out[0] = s[0]; out[1] = s[1]; out[2] = s[2];
     } else {
@@ -532,11 +452,7 @@ CESIUM_API int cesium_gltf_material_get_data(
     int materialIndex,
     CesiumMaterialData* out)
 {
-    if (!model || !out) return 0;
-    const auto* m = asModel(model);
-    if (materialIndex < 0 || materialIndex >= static_cast<int>(m->materials.size())) return 0;
-
-    const auto& mat = m->materials[materialIndex];
+    const auto& mat = asModel(model)->materials[materialIndex];
 
     // PBR defaults
     out->baseColorFactor[0] = 1; out->baseColorFactor[1] = 1;
@@ -600,20 +516,14 @@ CESIUM_API int cesium_gltf_texture_get_source(
     const CesiumGltfModel* model,
     int textureIndex)
 {
-    if (!model) return -1;
-    const auto& textures = asModel(model)->textures;
-    if (textureIndex < 0 || textureIndex >= static_cast<int>(textures.size())) return -1;
-    return textures[textureIndex].source;
+    return asModel(model)->textures[textureIndex].source;
 }
 
 CESIUM_API int cesium_gltf_texture_get_sampler(
     const CesiumGltfModel* model,
     int textureIndex)
 {
-    if (!model) return -1;
-    const auto& textures = asModel(model)->textures;
-    if (textureIndex < 0 || textureIndex >= static_cast<int>(textures.size())) return -1;
-    return textures[textureIndex].sampler;
+    return asModel(model)->textures[textureIndex].sampler;
 }
 
 CESIUM_API int cesium_gltf_sampler_get_data(
@@ -621,10 +531,7 @@ CESIUM_API int cesium_gltf_sampler_get_data(
     int samplerIndex,
     CesiumSamplerData* out)
 {
-    if (!model || !out) return 0;
-    const auto& samplers = asModel(model)->samplers;
-    if (samplerIndex < 0 || samplerIndex >= static_cast<int>(samplers.size())) return 0;
-    const auto& s = samplers[samplerIndex];
+    const auto& s = asModel(model)->samplers[samplerIndex];
     out->magFilter = s.magFilter.has_value() ? s.magFilter.value() : -1;
     out->minFilter = s.minFilter.has_value() ? s.minFilter.value() : -1;
     out->wrapS = s.wrapS;
@@ -637,10 +544,7 @@ CESIUM_API int cesium_gltf_image_get_data(
     int imageIndex,
     CesiumImageData* out)
 {
-    if (!model || !out) return 0;
-    const auto& images = asModel(model)->images;
-    if (imageIndex < 0 || imageIndex >= static_cast<int>(images.size())) return 0;
-    const auto& img = images[imageIndex];
+    const auto& img = asModel(model)->images[imageIndex];
     if (!img.pAsset) return 0;
     const auto& asset = *img.pAsset;
     if (asset.pixelData.empty()) return 0;

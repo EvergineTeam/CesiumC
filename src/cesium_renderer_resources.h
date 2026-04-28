@@ -79,8 +79,7 @@ public:
         void* pMainThreadRendererResources) noexcept override;
 
 private:
-    CesiumRendererResourceCallbacks _callbacks;
-    bool _hasCallbacks = false;
+    CesiumRendererResourceCallbacks _callbacks{};
 };
 
 #endif /* CESIUM_RENDERER_RESOURCES_INTERNAL_H */

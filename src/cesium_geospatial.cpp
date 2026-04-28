@@ -11,8 +11,6 @@
 #include <CesiumGeospatial/GlobeRectangle.h>
 #include <CesiumGeospatial/GlobeTransforms.h>
 
-#include <stdexcept>
-
 using namespace CesiumGeospatial;
 
 // ---------- Ellipsoid ----------

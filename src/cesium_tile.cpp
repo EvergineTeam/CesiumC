@@ -70,88 +70,58 @@ static CesiumBoundingVolume toBoundingVolume(
 extern "C" {
 
 CESIUM_API double cesium_tile_get_geometric_error(const CesiumTile* tile) {
-    if (!tile) return 0.0;
     return asTile(tile)->getGeometricError();
 }
 
 CESIUM_API CesiumMat4 cesium_tile_get_transform(const CesiumTile* tile) {
-    if (!tile) return cesiumMat4Identity();
     return fromGlmMat4(asTile(tile)->getTransform());
 }
 
 CESIUM_API CesiumTileLoadState cesium_tile_get_load_state(const CesiumTile* tile) {
-    if (!tile) return CESIUM_TILE_LOAD_STATE_UNLOADED;
-    auto state = asTile(tile)->getState();
-    return static_cast<CesiumTileLoadState>(static_cast<int>(state));
+    return static_cast<CesiumTileLoadState>(static_cast<int>(asTile(tile)->getState()));
 }
 
 CESIUM_API int cesium_tile_has_render_content(const CesiumTile* tile) {
-    if (!tile) return 0;
     return asTile(tile)->isRenderContent() ? 1 : 0;
 }
 
 CESIUM_API const CesiumGltfModel* cesium_tile_get_render_content_model(
     const CesiumTile* tile)
 {
-    if (!tile) return nullptr;
-    CESIUM_TRY_BEGIN
-    const auto& content = asTile(tile)->getContent();
-    const auto* renderContent = content.getRenderContent();
+    const auto* renderContent = asTile(tile)->getContent().getRenderContent();
     if (!renderContent) return nullptr;
-    const auto& model = renderContent->getModel();
-    return reinterpret_cast<const CesiumGltfModel*>(&model);
-    CESIUM_TRY_END
-    return nullptr;
+    return reinterpret_cast<const CesiumGltfModel*>(&renderContent->getModel());
 }
 
 CESIUM_API void* cesium_tile_get_render_resources(const CesiumTile* tile) {
-    if (!tile) return nullptr;
-    CESIUM_TRY_BEGIN
-    const auto& content = asTile(tile)->getContent();
-    const auto* renderContent = content.getRenderContent();
+    const auto* renderContent = asTile(tile)->getContent().getRenderContent();
     if (!renderContent) return nullptr;
     return renderContent->getRenderResources();
-    CESIUM_TRY_END
-    return nullptr;
 }
 
 CESIUM_API int cesium_tile_get_children_count(const CesiumTile* tile) {
-    if (!tile) return 0;
     return static_cast<int>(asTile(tile)->getChildren().size());
 }
 
 CESIUM_API const CesiumTile* cesium_tile_get_child(
     const CesiumTile* tile, int index)
 {
-    if (!tile) return nullptr;
     const auto& children = asTile(tile)->getChildren();
-    if (index < 0 || index >= static_cast<int>(children.size())) return nullptr;
     return reinterpret_cast<const CesiumTile*>(&children[static_cast<size_t>(index)]);
 }
 
 CESIUM_API CesiumBoundingVolume cesium_tile_get_bounding_volume(
     const CesiumTile* tile)
 {
-    CesiumBoundingVolume empty{};
-    empty.type = CESIUM_BOUNDING_VOLUME_SPHERE;
-    if (!tile) return empty;
-    CESIUM_TRY_BEGIN
     return toBoundingVolume(asTile(tile)->getBoundingVolume());
-    CESIUM_TRY_END
-    return empty;
 }
 
 CESIUM_API float cesium_tile_get_lod_transition_fade_percentage(
     const CesiumTile* tile)
 {
-    if (!tile) return 1.0f;
-    CESIUM_TRY_BEGIN
-    const auto& content = asTile(tile)->getContent();
-    const auto* renderContent = content.getRenderContent();
+    const auto* renderContent = asTile(tile)->getContent().getRenderContent();
     if (!renderContent) return 1.0f;
     return renderContent->getLodTransitionFadePercentage();
-    CESIUM_TRY_END
-    return 1.0f;
 }
 
 } // extern "C"
