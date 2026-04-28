@@ -299,6 +299,15 @@ CESIUM_API int cesium_view_update_result_get_tiles_fading_out_count(
     return static_cast<int>(asResult(result)->tilesFadingOut.size());
 }
 
+CESIUM_API const CesiumTile* cesium_view_update_result_get_tile_fading_out(
+    const CesiumViewUpdateResult* result, int index)
+{
+    if (!result) return nullptr;
+    const auto& tiles = asResult(result)->tilesFadingOut;
+    if (index < 0 || index >= static_cast<int>(tiles.size())) return nullptr;
+    return reinterpret_cast<const CesiumTile*>(tiles[static_cast<size_t>(index)].get());
+}
+
 CESIUM_API int32_t cesium_view_update_result_get_frame_number(
     const CesiumViewUpdateResult* result)
 {
