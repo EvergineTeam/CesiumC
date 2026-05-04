@@ -109,11 +109,11 @@ void* CCallbackRendererResources::prepareRasterInMainThread(
 
 void CCallbackRendererResources::freeRaster(
     const CesiumRasterOverlays::RasterOverlayTile& /*rasterTile*/,
-    void* /*pLoadThreadResult*/,
+    void* pLoadThreadResult,
     void* pMainThreadResult) noexcept
 {
     if (_callbacks.freeRasterResources) {
-        _callbacks.freeRasterResources(_callbacks.userData, pMainThreadResult);
+        _callbacks.freeRasterResources(_callbacks.userData, pLoadThreadResult, pMainThreadResult);
     }
 }
 
