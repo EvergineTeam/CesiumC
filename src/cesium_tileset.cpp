@@ -300,11 +300,10 @@ CESIUM_API void cesium_tileset_sample_height_most_detailed(
     CESIUM_TRY_BEGIN
     auto* ts = asTileset(tileset)->pTileset.get();
 
-    std::vector<CesiumGeospatial::Cartographic> nativePositions(
-        static_cast<size_t>(positionCount));
+    std::vector<CesiumGeospatial::Cartographic> nativePositions;
+    nativePositions.reserve(static_cast<size_t>(positionCount));
     for (int i = 0; i < positionCount; ++i) {
-        nativePositions[static_cast<size_t>(i)] =
-            toNativeCartographic(positions[i]);
+        nativePositions.emplace_back(toNativeCartographic(positions[i]));
     }
 
     ts->sampleHeightMostDetailed(nativePositions)
