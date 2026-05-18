@@ -12,6 +12,7 @@
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <Cesium3DTilesSelection/TilesetExternals.h>
 #include <Cesium3DTilesSelection/TilesetOptions.h>
+#include <Cesium3DTilesSelection/SampleHeightResult.h>
 #include <Cesium3DTilesSelection/ViewState.h>
 #include <Cesium3DTilesSelection/ViewUpdateResult.h>
 #include "cesium_wrappers.h"
@@ -21,6 +22,7 @@
 #include <CesiumCurl/CurlAssetAccessor.h>
 #include <CesiumUtility/CreditSystem.h>
 
+#include <exception>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,8 +54,25 @@ static const TilesetWrapper* asTileset(const CesiumTileset* h) {
 }
 
 using Cesium3DTilesSelection::TilesetOptions;
+using Cesium3DTilesSelection::SampleHeightResult;
 using Cesium3DTilesSelection::ViewState;
 using Cesium3DTilesSelection::ViewUpdateResult;
+
+static CesiumGeospatial::Cartographic toNativeCartographic(
+    CesiumCartographic cartographic) {
+    return CesiumGeospatial::Cartographic(
+        cartographic.longitude,
+        cartographic.latitude,
+        cartographic.height);
+}
+
+static CesiumCartographic toCCartographic(
+    const CesiumGeospatial::Cartographic& cartographic) {
+    return CesiumCartographic{
+        cartographic.longitude,
+        cartographic.latitude,
+        cartographic.height};
+}
 
 extern "C" {
 
@@ -266,6 +285,57 @@ CESIUM_API int64_t cesium_tileset_get_total_data_bytes(const CesiumTileset* tile
     return asTileset(tileset)->pTileset->getTotalDataBytes();
     CESIUM_TRY_END
     return 0;
+}
+
+CESIUM_API void cesium_tileset_sample_height_most_detailed(
+    CesiumTileset* tileset,
+    const CesiumCartographic* positions,
+    int positionCount,
+    CesiumSampleHeightMostDetailedCallback callback,
+    void* userData)
+{
+    if (!tileset || !callback || positionCount < 0) return;
+    if (!positions && positionCount > 0) return;
+
+    CESIUM_TRY_BEGIN
+    auto* ts = asTileset(tileset)->pTileset.get();
+
+    std::vector<CesiumGeospatial::Cartographic> nativePositions(
+        static_cast<size_t>(positionCount));
+    for (int i = 0; i < positionCount; ++i) {
+        nativePositions[static_cast<size_t>(i)] =
+            toNativeCartographic(positions[i]);
+    }
+
+    ts->sampleHeightMostDetailed(nativePositions)
+        .thenInMainThread(
+            [callback, userData](SampleHeightResult&& result) {
+                // Reuse buffers per thread to minimize heap allocations.
+                thread_local std::vector<CesiumCartographic> outPositions;
+                thread_local std::vector<int> outSampleSuccess;
+
+                outPositions.resize(result.positions.size());
+                for (size_t i = 0; i < result.positions.size(); ++i) {
+                    outPositions[i] = toCCartographic(result.positions[i]);
+                }
+
+                outSampleSuccess.assign(outPositions.size(), 0);
+                const size_t successCount = result.sampleSuccess.size();
+                for (size_t i = 0; i < outSampleSuccess.size() && i < successCount; ++i) {
+                    outSampleSuccess[i] = result.sampleSuccess[i] ? 1 : 0;
+                }
+
+                callback(
+                    userData,
+                    outPositions.empty() ? nullptr : outPositions.data(),
+                    outSampleSuccess.empty() ? nullptr : outSampleSuccess.data(),
+                    static_cast<int>(outPositions.size()));
+            })
+        .catchInMainThread(
+            [callback, userData](const std::exception&) {
+                callback(userData, nullptr, nullptr, 0);
+            });
+    CESIUM_TRY_END
 }
 
 // ============================================================================
