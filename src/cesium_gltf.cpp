@@ -559,22 +559,30 @@ CESIUM_API int cesium_gltf_image_get_data(
 
 // ---------- GLB serialization ----------
 
-CESIUM_API int cesium_gltf_model_write_glb(
-    const CesiumGltfModel* model,
-    uint8_t** out_data,
-    size_t* out_size)
-{
-    if (!model || !out_data || !out_size) return 0;
-
-    CESIUM_TRY_BEGIN
-    // Copy the model so we can collapse all buffers into one for GLB
-    Model copy = *asModel(model);
-
+// Shared GLB serialization core. Mutates `model` (renames overlay attributes
+// and collapses all buffers into one) and writes the result to a freshly
+// heap-allocated buffer the caller must free with cesium_gltf_free_glb.
+static int writeGlbFromModel(Model& model, uint8_t** out_data, size_t* out_size) {
     // Rename _CESIUMOVERLAY_N attributes to TEXCOORD_N so standard glTF
     // loaders recognise them as texture coordinates.
-    for (auto& mesh : copy.meshes) {
+    for (auto& mesh : model.meshes) {
         for (auto& primitive : mesh.primitives) {
-            // Find the next free TEXCOORD index already present
+            // Collect (and remove) overlay attributes first. Most primitives
+            // have none, so we can skip scanning for the next free TEXCOORD
+            // index entirely. We only need the accessor index, not the name.
+            std::vector<int32_t> overlayAccessors;
+            for (auto it = primitive.attributes.begin(); it != primitive.attributes.end();) {
+                if (it->first.rfind("_CESIUMOVERLAY_", 0) == 0) {
+                    overlayAccessors.push_back(it->second);
+                    it = primitive.attributes.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (overlayAccessors.empty())
+                continue;
+
+            // Find the next free TEXCOORD index already present.
             int32_t nextTexCoord = 0;
             for (const auto& [name, _] : primitive.attributes) {
                 if (name.rfind("TEXCOORD_", 0) == 0) {
@@ -583,34 +591,24 @@ CESIUM_API int cesium_gltf_model_write_glb(
                         nextTexCoord = idx + 1;
                 }
             }
-            
-            std::vector<std::pair<std::string, int32_t>> overlays;
-            for (auto it = primitive.attributes.begin(); it != primitive.attributes.end();) {
-                if (it->first.rfind("_CESIUMOVERLAY_", 0) == 0) {
-                    overlays.push_back(*it);
-                    it = primitive.attributes.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            for (const auto& [oldName, accessorIdx] : overlays) {
-                std::string newName = "TEXCOORD_" + std::to_string(nextTexCoord++);
-                primitive.attributes[newName] = accessorIdx;
+
+            for (int32_t accessorIdx : overlayAccessors) {
+                primitive.attributes["TEXCOORD_" + std::to_string(nextTexCoord++)] = accessorIdx;
             }
         }
     }
 
-    CesiumGltfContent::GltfUtilities::collapseToSingleBuffer(copy);
+    CesiumGltfContent::GltfUtilities::collapseToSingleBuffer(model);
 
     std::span<const std::byte> bufferData;
-    if (!copy.buffers.empty() && !copy.buffers[0].cesium.data.empty()) {
+    if (!model.buffers.empty() && !model.buffers[0].cesium.data.empty()) {
         bufferData = std::span<const std::byte>(
-            copy.buffers[0].cesium.data.data(),
-            copy.buffers[0].cesium.data.size());
+            model.buffers[0].cesium.data.data(),
+            model.buffers[0].cesium.data.size());
     }
 
     CesiumGltfWriter::GltfWriter writer;
-    auto result = writer.writeGlb(copy, bufferData);
+    auto result = writer.writeGlb(model, bufferData);
 
     if (!result.errors.empty() || result.gltfBytes.empty()) {
         if (!result.errors.empty())
@@ -626,6 +624,20 @@ CESIUM_API int cesium_gltf_model_write_glb(
     *out_data = data;
     *out_size = size;
     return 1;
+}
+
+CESIUM_API int cesium_gltf_model_write_glb(
+    CesiumGltfModel* model,
+    uint8_t** out_data,
+    size_t* out_size)
+{
+    if (!model || !out_data || !out_size) return 0;
+
+    CESIUM_TRY_BEGIN
+    // Serialize the caller's model directly, avoiding a full duplication of all
+    // buffer and image bytes. This mutates the model (overlay attributes are
+    // renamed and buffers are collapsed), so it must not be reused afterwards.
+    return writeGlbFromModel(*reinterpret_cast<Model*>(model), out_data, out_size);
     CESIUM_TRY_END
     return 0;
 }

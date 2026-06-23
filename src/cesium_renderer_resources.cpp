@@ -83,6 +83,22 @@ void* CCallbackRendererResources::prepareRasterInLoadThread(
     const std::any& /*rendererOptions*/)
 {
     if (_callbacks.prepareRasterInLoadThread) {
+        // CesiumImageMipPosition is layout-compatible with ImageAssetMipPosition,
+        // so the mip array can be passed through without copying.
+        static_assert(
+            sizeof(CesiumImageMipPosition) ==
+                sizeof(CesiumGltf::ImageAssetMipPosition),
+            "CesiumImageMipPosition must match ImageAssetMipPosition layout");
+        static_assert(
+            static_cast<int>(CesiumGltf::GpuCompressedPixelFormat::NONE) ==
+                CESIUM_GPU_COMPRESSED_PIXEL_FORMAT_NONE,
+            "GpuCompressedPixelFormat enum mapping drifted");
+        static_assert(
+            static_cast<int>(
+                CesiumGltf::GpuCompressedPixelFormat::ETC2_EAC_RG11) ==
+                CESIUM_GPU_COMPRESSED_PIXEL_FORMAT_ETC2_EAC_RG11,
+            "GpuCompressedPixelFormat enum mapping drifted");
+
         const auto& pixelData = image.pixelData;
         return _callbacks.prepareRasterInLoadThread(
             _callbacks.userData,
@@ -91,7 +107,10 @@ void* CCallbackRendererResources::prepareRasterInLoadThread(
             image.width,
             image.height,
             image.channels,
-            image.bytesPerChannel);
+            image.bytesPerChannel,
+            static_cast<CesiumGpuCompressedPixelFormat>(image.compressedPixelFormat),
+            reinterpret_cast<const CesiumImageMipPosition*>(image.mipPositions.data()),
+            static_cast<int32_t>(image.mipPositions.size()));
     }
     return nullptr;
 }
