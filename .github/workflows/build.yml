@@ -124,7 +124,11 @@ jobs:
         run: |
           $mode = if ($env:GITHUB_REF -eq 'refs/heads/main') { 'readwrite' } else { 'read' }
           "VCPKG_BINARY_SOURCES=clear;nuget,$($env:NUGET_FEED_URL),$mode" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $nuget = & "$env:VCPKG_ROOT/vcpkg.exe" fetch nuget | Select-Object -Last 1
+          $fetchOut = & "$env:VCPKG_ROOT/vcpkg.exe" fetch nuget
+          Write-Host "vcpkg fetch nuget output:`n$($fetchOut -join "`n")"
+          $nuget = ($fetchOut | Select-String -Pattern 'nuget\.exe' | Select-Object -Last 1).Line.Trim()
+          if (-not $nuget) { throw "Could not resolve nuget.exe path from 'vcpkg fetch nuget'." }
+          Write-Host "Resolved nuget.exe: $nuget"
           & $nuget sources add -Source "$env:NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$env:GITHUB_REPOSITORY_OWNER" -Password "$env:NUGET_TOKEN"
           & $nuget setapikey "$env:NUGET_TOKEN" -Source "$env:NUGET_FEED_URL"
 
@@ -136,9 +140,14 @@ jobs:
         run: |
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then mode=readwrite; else mode=read; fi
           echo "VCPKG_BINARY_SOURCES=clear;nuget,${NUGET_FEED_URL},${mode}" >> "$GITHUB_ENV"
-          nuget=$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)
-          mono "$nuget" sources add -Source "$NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$GITHUB_REPOSITORY_OWNER" -Password "$NUGET_TOKEN"
-          mono "$nuget" setapikey "$NUGET_TOKEN" -Source "$NUGET_FEED_URL"
+          fetch_out="$("$VCPKG_ROOT/vcpkg" fetch nuget)"
+          echo "vcpkg fetch nuget output:"
+          echo "$fetch_out"
+          nuget_exe="$(printf '%s\n' "$fetch_out" | grep -i 'nuget\.exe' | tail -n 1)"
+          if [ -z "$nuget_exe" ]; then echo "Could not resolve nuget.exe path from 'vcpkg fetch nuget'." >&2; exit 1; fi
+          echo "Resolved nuget.exe: $nuget_exe"
+          mono "$nuget_exe" sources add -Source "$NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$GITHUB_REPOSITORY_OWNER" -Password "$NUGET_TOKEN"
+          mono "$nuget_exe" setapikey "$NUGET_TOKEN" -Source "$NUGET_FEED_URL"
 
       # ---- Build ----
 
