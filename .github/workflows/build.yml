@@ -6,10 +6,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Cancel an in-progress run when a newer commit is pushed to the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CMAKE_BUILD_TYPE: Release
-  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
-  VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-cache,readwrite
+  # Release-only dependency builds: these overlay triplets override the built-in
+  # ones (same names) and set VCPKG_BUILD_TYPE=release, so vcpkg skips Debug.
+  VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/triplets
+  # VCPKG_BINARY_SOURCES is set per-run in the "Configure vcpkg binary cache"
+  # step below: readwrite on main (to warm the cache), read-only elsewhere.
 
 jobs:
   build:
@@ -17,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - os: windows-2022
             arch: x64
             triplet: x64-windows
             generator: "Visual Studio 17 2022"
@@ -27,7 +35,7 @@ jobs:
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: false
 
-          - os: windows-latest
+          - os: windows-2022
             arch: arm64
             triplet: arm64-windows
             generator: "Visual Studio 17 2022"
@@ -78,12 +86,18 @@ jobs:
 
       # ---- vcpkg binary caching ----
 
-      - name: Export GitHub Actions cache variables
+      - name: Configure vcpkg binary cache
         uses: actions/github-script@v8
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+            // Per-package cache backed by the GitHub Actions cache service.
+            // Only warm (write) the cache from main; PRs read it but never write,
+            // so they can't evict shared entries and fork PRs don't fail on write.
+            const writable = context.ref === 'refs/heads/main';
+            core.exportVariable('VCPKG_BINARY_SOURCES', `clear;x-gha,${writable ? 'readwrite' : 'read'}`);
 
       # ---- Install platform tools ----
 
@@ -103,15 +117,6 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 62159a45e18f3a9ac0548628dcaf74fcb60c6ff9
-
-      # ---- Cache vcpkg artifacts ----
-      - name: Set up binary cache
-        uses: actions/cache@v5.0.3
-        with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: ${{ runner.os }}-vcpkg-binary-cache-${{ hashFiles('vcpkg*.json') }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-binary-cache-
 
       # ---- Build ----
 
