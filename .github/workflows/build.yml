@@ -11,13 +11,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# GITHUB_TOKEN needs packages:write to push to the GitHub Packages NuGet feed
+# used as the vcpkg binary cache. On pull requests from forks this is
+# automatically downgraded to read-only.
+permissions:
+  contents: read
+  packages: write
+
 env:
   CMAKE_BUILD_TYPE: Release
   # Release-only dependency builds: these overlay triplets override the built-in
   # ones (same names) and set VCPKG_BUILD_TYPE=release, so vcpkg skips Debug.
   VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/triplets
-  # VCPKG_BINARY_SOURCES is set per-run in the "Configure vcpkg binary cache"
-  # step below: readwrite on main (to warm the cache), read-only elsewhere.
+  # GitHub Packages NuGet feed used as the vcpkg binary cache (owner-scoped).
+  NUGET_FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
 
 jobs:
   build:
@@ -84,32 +91,17 @@ jobs:
         with:
           submodules: recursive
 
-      # ---- vcpkg binary caching ----
-
-      - name: Configure vcpkg binary cache
-        uses: actions/github-script@v8
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-            // Per-package cache backed by the GitHub Actions cache service.
-            // Only warm (write) the cache from main; PRs read it but never write,
-            // so they can't evict shared entries and fork PRs don't fail on write.
-            const writable = context.ref === 'refs/heads/main';
-            core.exportVariable('VCPKG_BINARY_SOURCES', `clear;x-gha,${writable ? 'readwrite' : 'read'}`);
-
       # ---- Install platform tools ----
 
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build nasm pkg-config
+          sudo apt-get install -y ninja-build nasm pkg-config mono-complete
 
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja nasm
+        run: brew install ninja nasm mono
 
       # ---- vcpkg ----
 
@@ -117,6 +109,36 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 62159a45e18f3a9ac0548628dcaf74fcb60c6ff9
+
+      # ---- vcpkg binary cache (GitHub Packages NuGet feed) ----
+      # The cache is writable only on main (to warm it); every other ref reads
+      # it but never writes, so PRs can't evict shared entries. If VCPKG_PAT_TOKEN
+      # (a PAT with packages:read/write) is configured it is preferred, otherwise
+      # the built-in GITHUB_TOKEN is used.
+
+      - name: Set up NuGet binary cache (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NUGET_TOKEN: ${{ secrets.VCPKG_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          $mode = if ($env:GITHUB_REF -eq 'refs/heads/main') { 'readwrite' } else { 'read' }
+          "VCPKG_BINARY_SOURCES=clear;nuget,$($env:NUGET_FEED_URL),$mode" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $nuget = & "$env:VCPKG_ROOT/vcpkg.exe" fetch nuget | Select-Object -Last 1
+          & $nuget sources add -Source "$env:NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$env:GITHUB_REPOSITORY_OWNER" -Password "$env:NUGET_TOKEN"
+          & $nuget setapikey "$env:NUGET_TOKEN" -Source "$env:NUGET_FEED_URL"
+
+      - name: Set up NuGet binary cache (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          NUGET_TOKEN: ${{ secrets.VCPKG_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then mode=readwrite; else mode=read; fi
+          echo "VCPKG_BINARY_SOURCES=clear;nuget,${NUGET_FEED_URL},${mode}" >> "$GITHUB_ENV"
+          nuget=$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)
+          mono "$nuget" sources add -Source "$NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$GITHUB_REPOSITORY_OWNER" -Password "$NUGET_TOKEN"
+          mono "$nuget" setapikey "$NUGET_TOKEN" -Source "$NUGET_FEED_URL"
 
       # ---- Build ----
 
