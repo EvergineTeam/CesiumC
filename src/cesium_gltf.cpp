@@ -559,27 +559,45 @@ CESIUM_API int cesium_gltf_image_get_data(
 
 // ---------- GLB serialization ----------
 
-// Shared GLB serialization core. Mutates `model` (renames overlay attributes
-// and collapses all buffers into one) and writes the result to a freshly
-// heap-allocated buffer the caller must free with cesium_gltf_free_glb.
+// Shared GLB serialization core. For the duration of the write, overlay
+// attributes are renamed to TEXCOORD_N (so standard glTF loaders treat them as
+// texture coordinates) and all buffers are collapsed into one; the overlay
+// names are then restored before returning. Renaming only touches lightweight
+// attribute metadata, so no buffer or image bytes are copied, and the caller's
+// model keeps its _CESIUMOVERLAY_n attributes (which cesium-native needs for
+// raster-overlay refinement). The result is written to a freshly heap-allocated
+// buffer the caller must free with cesium_gltf_free_glb.
 static int writeGlbFromModel(Model& model, uint8_t** out_data, size_t* out_size) {
+    // Records an overlay attribute that was temporarily renamed for the GLB
+    // output, so the original name can be restored on the caller's model.
+    struct OverlayRename {
+        size_t meshIndex;
+        size_t primitiveIndex;
+        std::string texCoordName; // temporary TEXCOORD_n name used while writing
+        std::string overlayName;  // original _CESIUMOVERLAY_n name to restore
+    };
+    std::vector<OverlayRename> renames;
+
     // Rename _CESIUMOVERLAY_N attributes to TEXCOORD_N so standard glTF
     // loaders recognise them as texture coordinates.
-    for (auto& mesh : model.meshes) {
-        for (auto& primitive : mesh.primitives) {
+    for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
+        auto& primitives = model.meshes[mi].primitives;
+        for (size_t pi = 0; pi < primitives.size(); ++pi) {
+            auto& primitive = primitives[pi];
+
             // Collect (and remove) overlay attributes first. Most primitives
             // have none, so we can skip scanning for the next free TEXCOORD
-            // index entirely. We only need the accessor index, not the name.
-            std::vector<int32_t> overlayAccessors;
+            // index entirely.
+            std::vector<std::pair<std::string, int32_t>> overlays;
             for (auto it = primitive.attributes.begin(); it != primitive.attributes.end();) {
                 if (it->first.rfind("_CESIUMOVERLAY_", 0) == 0) {
-                    overlayAccessors.push_back(it->second);
+                    overlays.emplace_back(it->first, it->second);
                     it = primitive.attributes.erase(it);
                 } else {
                     ++it;
                 }
             }
-            if (overlayAccessors.empty())
+            if (overlays.empty())
                 continue;
 
             // Find the next free TEXCOORD index already present.
@@ -592,8 +610,12 @@ static int writeGlbFromModel(Model& model, uint8_t** out_data, size_t* out_size)
                 }
             }
 
-            for (int32_t accessorIdx : overlayAccessors) {
-                primitive.attributes["TEXCOORD_" + std::to_string(nextTexCoord++)] = accessorIdx;
+            for (auto& [overlayName, accessorIdx] : overlays) {
+                std::string texCoordName =
+                    "TEXCOORD_" + std::to_string(nextTexCoord++);
+                primitive.attributes[texCoordName] = accessorIdx;
+                renames.push_back(
+                    {mi, pi, std::move(texCoordName), overlayName});
             }
         }
     }
@@ -609,6 +631,21 @@ static int writeGlbFromModel(Model& model, uint8_t** out_data, size_t* out_size)
 
     CesiumGltfWriter::GltfWriter writer;
     auto result = writer.writeGlb(model, bufferData);
+
+    // Restore the original overlay attribute names. writeGlb has already
+    // captured the renamed attributes into the JSON, so the caller's model is
+    // left with its _CESIUMOVERLAY_n attributes intact (needed by cesium-native
+    // to refine to the most detailed level of detail).
+    for (const auto& rename : renames) {
+        auto& attributes =
+            model.meshes[rename.meshIndex].primitives[rename.primitiveIndex].attributes;
+        auto it = attributes.find(rename.texCoordName);
+        if (it != attributes.end()) {
+            int32_t accessorIdx = it->second;
+            attributes.erase(it);
+            attributes[rename.overlayName] = accessorIdx;
+        }
+    }
 
     if (!result.errors.empty() || result.gltfBytes.empty()) {
         if (!result.errors.empty())
@@ -635,8 +672,10 @@ CESIUM_API int cesium_gltf_model_write_glb(
 
     CESIUM_TRY_BEGIN
     // Serialize the caller's model directly, avoiding a full duplication of all
-    // buffer and image bytes. This mutates the model (overlay attributes are
-    // renamed and buffers are collapsed), so it must not be reused afterwards.
+    // buffer and image bytes. Overlay attributes are renamed to TEXCOORD_n only
+    // for the written GLB and restored afterwards, so the model keeps its
+    // _CESIUMOVERLAY_n attributes. Its buffers are collapsed into one (a
+    // lossless transformation), so the model remains usable afterwards.
     return writeGlbFromModel(*reinterpret_cast<Model*>(model), out_data, out_size);
     CESIUM_TRY_END
     return 0;
