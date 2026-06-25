@@ -126,9 +126,9 @@ jobs:
           "VCPKG_BINARY_SOURCES=clear;nuget,$($env:NUGET_FEED_URL),$mode" | Out-File -FilePath $env:GITHUB_ENV -Append
           $fetchOut = & "$env:VCPKG_ROOT/vcpkg.exe" fetch nuget
           Write-Host "vcpkg fetch nuget output:`n$($fetchOut -join "`n")"
-          $nuget = ($fetchOut | Select-String -Pattern 'nuget\.exe' | Select-Object -Last 1).Line.Trim()
-          if (-not $nuget) { throw "Could not resolve nuget.exe path from 'vcpkg fetch nuget'." }
-          Write-Host "Resolved nuget.exe: $nuget"
+          $nuget = ($fetchOut | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
+          if (-not $nuget) { throw "Could not resolve nuget path from 'vcpkg fetch nuget'." }
+          Write-Host "Resolved nuget: $nuget"
           & $nuget sources add -Source "$env:NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$env:GITHUB_REPOSITORY_OWNER" -Password "$env:NUGET_TOKEN"
           & $nuget setapikey "$env:NUGET_TOKEN" -Source "$env:NUGET_FEED_URL"
 
@@ -143,11 +143,17 @@ jobs:
           fetch_out="$("$VCPKG_ROOT/vcpkg" fetch nuget)"
           echo "vcpkg fetch nuget output:"
           echo "$fetch_out"
-          nuget_exe="$(printf '%s\n' "$fetch_out" | grep -i 'nuget\.exe' | tail -n 1)"
-          if [ -z "$nuget_exe" ]; then echo "Could not resolve nuget.exe path from 'vcpkg fetch nuget'." >&2; exit 1; fi
-          echo "Resolved nuget.exe: $nuget_exe"
-          mono "$nuget_exe" sources add -Source "$NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$GITHUB_REPOSITORY_OWNER" -Password "$NUGET_TOKEN"
-          mono "$nuget_exe" setapikey "$NUGET_TOKEN" -Source "$NUGET_FEED_URL"
+          nuget_path="$(printf '%s\n' "$fetch_out" | grep -v '^[[:space:]]*$' | tail -n 1 || true)"
+          if [ -z "$nuget_path" ]; then echo "Could not resolve nuget path from 'vcpkg fetch nuget'." >&2; exit 1; fi
+          echo "Resolved nuget: $nuget_path"
+          # vcpkg may return its own nuget.exe (run via mono) or a system nuget
+          # launcher script (e.g. mono's), which must be executed directly.
+          case "$nuget_path" in
+            *.exe) nuget=(mono "$nuget_path") ;;
+            *)     nuget=("$nuget_path") ;;
+          esac
+          "${nuget[@]}" sources add -Source "$NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$GITHUB_REPOSITORY_OWNER" -Password "$NUGET_TOKEN"
+          "${nuget[@]}" setapikey "$NUGET_TOKEN" -Source "$NUGET_FEED_URL"
 
       # ---- Build ----
 
