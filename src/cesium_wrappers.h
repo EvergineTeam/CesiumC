@@ -17,7 +17,6 @@
 #include <CesiumAsync/AsyncSystem.h>
 #include <CesiumAsync/IAssetAccessor.h>
 #include <CesiumAsync/ITaskProcessor.h>
-#include <CesiumCurl/CurlAssetAccessor.h>
 #include <CesiumUtility/CreditSystem.h>
 
 #include <cesium/cesium_tileset.h>
@@ -26,13 +25,36 @@
 #include <string>
 #include <vector>
 
+// A task processor that may need draining from the main thread.
+//
+// cesium-native's ITaskProcessor promises that startTask() runs its function "in a background
+// thread". Where there are threads, that is what happens and drainDeferredTasks() has nothing to
+// do. Where there are none -- Emscripten built without -pthread, which is how .NET's browser-wasm
+// links native code -- startTask() can only queue, and the queue has to be run from somewhere.
+// That somewhere is the host's per-frame call to
+// cesium_async_system_dispatch_main_thread_tasks().
+//
+// Running the function inline inside startTask() was the other option and it is worse: the
+// scheduler calls startTask() from inside its own scope (CesiumAsync/src/TaskScheduler.cpp:30),
+// so a task that schedules another task would recurse through the scheduler with no bound.
+class CTaskProcessor : public CesiumAsync::ITaskProcessor {
+public:
+    virtual void drainDeferredTasks() {}
+};
+
 struct AsyncSystemWrapper {
-    std::shared_ptr<CesiumAsync::ITaskProcessor> pTaskProcessor;
+    std::shared_ptr<CTaskProcessor> pTaskProcessor;
     CesiumAsync::AsyncSystem asyncSystem;
 };
 
 struct AssetAccessorWrapper {
-    std::shared_ptr<CesiumCurl::CurlAssetAccessor> pAccessor;
+    // The interface, not the implementation. Everything downstream of this struct --
+    // cesium_ion.cpp and cesium_tileset.cpp -- only ever passes pAccessor where an
+    // IAssetAccessor is expected, so naming the concrete type here bought nothing and cost
+    // the ability to have more than one. CesiumCurl is excluded from wasm builds upstream
+    // (platform=!wasm32), which made this struct alone enough to make the wrapper
+    // unbuildable for the browser.
+    std::shared_ptr<CesiumAsync::IAssetAccessor> pAccessor;
 };
 
 struct CreditSystemWrapper {

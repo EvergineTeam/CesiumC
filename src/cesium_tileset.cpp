@@ -19,7 +19,6 @@
 
 #include <CesiumAsync/AsyncSystem.h>
 #include <CesiumAsync/IAssetAccessor.h>
-#include <CesiumCurl/CurlAssetAccessor.h>
 #include <CesiumUtility/CreditSystem.h>
 
 #include <exception>

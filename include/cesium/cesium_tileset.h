@@ -213,18 +213,29 @@ CESIUM_API CesiumAsyncSystem* cesium_async_system_create(void);
 CESIUM_API void cesium_async_system_destroy(CesiumAsyncSystem* asyncSystem);
 
 /**
- * @brief Dispatches pending main-thread tasks. Must be called each frame
- * from the main thread.
+ * @brief Dispatches pending main-thread tasks. Must be called each frame from the main thread.
+ *
+ * On a platform with threads this runs continuations that were scheduled back to the main thread,
+ * while the work itself happens on background workers. On a single-threaded build -- Emscripten
+ * without -pthread, which is how .NET's browser-wasm links native code -- there are no workers, so
+ * this call is what runs the background work as well. Skipping it there does not merely delay
+ * callbacks: nothing loads at all.
  */
 CESIUM_API void cesium_async_system_dispatch_main_thread_tasks(CesiumAsyncSystem* asyncSystem);
 
 /* ============================================================================
- * AssetAccessor (HTTP client via libcurl)
+ * AssetAccessor (HTTP client)
  * ========================================================================= */
 
 /**
- * @brief Creates an asset accessor using libcurl.
- * @param userAgent The User-Agent header string, or NULL for default.
+ * @brief Creates an asset accessor.
+ *
+ * Backed by libcurl on every platform where CesiumCurl is available, which upstream defines as
+ * everything except wasm32. On Emscripten this returns a valid accessor that fails every
+ * request with status 0 -- the browser needs a fetch-based implementation, and there is not one
+ * yet. The handle is real and safe to pass around either way; only the transport differs.
+ *
+ * @param userAgent The User-Agent header string, or NULL for default. Ignored on Emscripten.
  */
 CESIUM_API CesiumAssetAccessor* cesium_asset_accessor_create(const char* userAgent);
 
