@@ -1,7 +1,8 @@
 /**
  * @file cesium_asset_accessor.cpp
- * @brief C wrapper for the asset accessor. CesiumCurl everywhere it exists; on Emscripten a
- *        placeholder, because upstream marks CesiumCurl platform=!wasm32.
+ * @brief C wrapper for the asset accessor. CesiumCurl wherever it is available; a placeholder
+ *        when it is not. CMake decides which by defining CESIUMC_NO_CURL from
+ *        CESIUM_DISABLE_CURL, so this file and the link line follow one decision rather than two.
  */
 
 #include "cesium_internal.h"
@@ -13,7 +14,7 @@
 #include <memory>
 #include <string>
 
-#if defined(__EMSCRIPTEN__)
+#if defined(CESIUMC_NO_CURL)
 
 #include <CesiumAsync/AsyncSystem.h>
 #include <CesiumAsync/HttpHeaders.h>
@@ -32,17 +33,16 @@ namespace {
 // A placeholder, on purpose, and worth being explicit about rather than leaving a TODO that
 // reads like an oversight.
 //
-// The question this build answers is whether CesiumNativeC *links* for wasm once CesiumCurl is
-// out of the way. The wrapper pulls blend2d, libjpeg-turbo, sqlite3 and a dozen more in through
-// cesium-native, and any one of them could be the real blocker. Writing a working
-// emscripten_fetch accessor first would mean investing in networking before knowing whether the
-// target can be linked at all.
+// Without curl there is no HTTP transport here at all, and the honest thing is to say so at
+// every call rather than to fail at construction: the handle stays real and safe to pass around,
+// so a consumer that only reads local data works, and one that requests a URL learns immediately.
+// Every request resolves with status 0, which is what CurlAssetAccessor itself reports for a
+// transport-level failure and what callers already handle. Nothing returns empty data dressed up
+// as success.
 //
-// So every request fails immediately with status 0, which is what CurlAssetAccessor itself
-// reports for a transport-level failure and what callers already handle. Nothing returns empty
-// data dressed up as success. A real accessor -- over emscripten_fetch, or as a callback into
-// the host, which is probably the better fit for .NET -- replaces the Emscripten half of this
-// file and nothing else.
+// The case that matters today is the browser. A real accessor there -- over emscripten_fetch, or
+// as a callback into the host, which is probably the better fit for .NET, since the host already
+// has an HTTP stack and its own idea of authentication -- replaces this class and nothing else.
 class FailedResponse final : public CesiumAsync::IAssetResponse {
 public:
   uint16_t statusCode() const override { return 0; }
@@ -106,7 +106,7 @@ extern "C" {
 
 CESIUM_API CesiumAssetAccessor* cesium_asset_accessor_create(const char* userAgent) {
     CESIUM_TRY_BEGIN
-#if defined(__EMSCRIPTEN__)
+#if defined(CESIUMC_NO_CURL)
     (void)userAgent;
     auto* wrapper = new AssetAccessorWrapper{
         std::make_shared<UnimplementedAssetAccessor>()

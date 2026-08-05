@@ -23,11 +23,16 @@
     "libjpeg-turbo",
     "sqlite3",
     "tinyxml2",
+    {
+      "comment": "cpp-httplib hosts a local web server for OAuth2, which cannot work in a browser, and recent versions are 64-bit only. cesium-native skips it for wasm in CMake; this manifest is a second copy of its dependency list and needs the same guard.",
+      "name": "cpp-httplib",
+      "default-features": false,
+      "platform": "!wasm32"
+    },
     "libwebp",
     "zlib-ng",
     "picosha2",
     "earcut-hpp",
-    "cpp-httplib",
     "libmorton",
     "zstd",
     {

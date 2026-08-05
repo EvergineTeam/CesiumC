@@ -105,6 +105,21 @@ jobs:
         with:
           vcpkgGitCommitId: 62159a45e18f3a9ac0548628dcaf74fcb60c6ff9
 
+      # --allow-unsupported is for blend2d, and it is narrower than it sounds.
+      #
+      # The port declares Supports: !wasm32. Manifest mode treats that as an error; classic mode
+      # only warns -- which is why cesium-native's own Emscripten CI never hits it: under its own
+      # build it uses ezvcpkg (classic), and CESIUM_USE_EZVCPKG defaults OFF precisely when a
+      # parent supplies vcpkg.cmake, as this project does. So the same dependency set is strict
+      # here and lax there.
+      #
+      # Not taken on faith: run 31004829159 installed blend2d[core] for wasm32-emscripten and it
+      # built. The Supports field is upstream vcpkg's blanket statement about the port including
+      # its jit feature; cesium-native asks for [core] exactly because wasm has no jit. So this
+      # allows something already observed to work rather than overriding a real incompatibility.
+      #
+      # If this experiment leads to a supported wasm build, the durable fix is an overlay port
+      # that relaxes Supports for the core feature, not a blanket flag.
       - name: Configure
         shell: pwsh
         run: |
@@ -112,7 +127,27 @@ jobs:
             -G Ninja `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=wasm32-emscripten-exp `
+            -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
             -DCMAKE_BUILD_TYPE=Release
+
+      # Proof that upstream's wasm branches were actually taken. CESIUM_TARGET_WASM is set by
+      # CesiumC's CMakeLists from EMSCRIPTEN, because upstream's own detection looks at the
+      # *name* of CMAKE_TOOLCHAIN_FILE and here that name is vcpkg.cmake. If this prints OFF,
+      # the rest of the run is measuring the wrong configuration.
+      - name: Confirm the wasm configuration took effect
+        shell: bash
+        run: |
+          set -euo pipefail
+          for var in CESIUM_TARGET_WASM CESIUM_DISABLE_CURL CESIUM_USE_EZVCPKG VCPKG_MANIFEST_MODE; do
+            printf '%s = %s\n' "$var" "$(grep -E "^${var}(:[A-Z]+)?=" build/CMakeCache.txt | head -1 | cut -d= -f2- || echo '(not in cache)')"
+          done
+          echo "--- CesiumCurl target built? ---"
+          if [ -d build/cesium-native/CesiumCurl ]; then
+            echo "CesiumCurl directory PRESENT -- curl was not disabled, which is wrong for wasm"
+            exit 1
+          else
+            echo "CesiumCurl absent, as expected"
+          fi
 
       # The library first, on its own, so a failure here is unambiguously "the wrapper does not
       # compile for wasm" rather than anything about the test binary.
