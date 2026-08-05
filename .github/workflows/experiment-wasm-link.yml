@@ -39,7 +39,38 @@ env:
 
 jobs:
   wasm:
-    name: wasm32-emscripten
+    # Two legs, because the last run turned the question into a choice.
+    #
+    # cesium-native's cmake/compiler.cmake has one `if(CESIUM_TARGET_WASM)` block that adds
+    # -pthread and -fwasm-exceptions to compilation, and -pthread -fwasm-exceptions
+    # -sPROXY_TO_PTHREAD at link. There is no option to separate that from the platform facts
+    # CESIUM_TARGET_WASM also carries (curl off, blend2d core, httplib off, pointer size), so
+    # asking for the second gets the first.
+    #
+    #   upstream-flags     adopt them, and pass the same set to CesiumC's own targets so the link
+    #                      is consistent. Answers "does it link at all".
+    #   dotnet-compatible  strip that block, build with no threads and no wasm EH. Answers the
+    #                      question that decides whether this is usable: Evergine's own shipped
+    #                      browser-wasm natives contain zero occurrences of __cpp_exception,
+    #                      __wasm_lpad_context or _Unwind_CallPersonality -- checked on
+    #                      ImGui.Net's cimgui.a and Evergine's ktx.a -- so an archive carrying
+    #                      wasm EH is not the shape that links into a .NET wasm app today.
+    #
+    # Stripping upstream's block is a run-time sed on a submodule, which is fine for an
+    # experiment and is not a proposal. If this leg is the one that works, the durable fix is an
+    # upstream option, or a fork, and that is a decision rather than a patch.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: upstream-flags
+            strip-unity-flags: "false"
+            extra-flags: "-pthread -msimd128 -mnontrapping-fptoint -mbulk-memory -fwasm-exceptions -sSUPPORT_LONGJMP=wasm"
+          - leg: dotnet-compatible
+            strip-unity-flags: "true"
+            extra-flags: ""
+
+    name: ${{ matrix.leg }}
     runs-on: windows-2022
     timeout-minutes: 300
 
@@ -47,6 +78,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # Deletes the two lines that add Unity's flag set, and nothing else, so the platform half
+      # of CESIUM_TARGET_WASM stays intact. Asserts the lines were found: a sed that silently
+      # matches nothing would make this leg a duplicate of the other one wearing a different name.
+      - name: Strip the Unity flag block from cesium-native
+        if: matrix.strip-unity-flags == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=cesium-native/cmake/compiler.cmake
+          before=$(grep -cE '^  add_(compile|link)_options\(-pthread' "$f")
+          if [ "$before" != "2" ]; then
+            echo "::error::expected 2 flag lines in $f, found $before -- upstream changed, re-read it"
+            exit 1
+          fi
+          sed -i -E '/^  add_(compile|link)_options\(-pthread/d' "$f"
+          echo "--- compiler.cmake wasm block after stripping ---"
+          sed -n '/if(CESIUM_TARGET_WASM)/,/^endif()/p' "$f"
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
@@ -152,8 +201,9 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=wasm32-emscripten-exp `
             -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
             -DCMAKE_CROSSCOMPILING_EMULATOR="$env:EMSDK_NODE" `
-            -DCMAKE_CXX_FLAGS=-DSIZEOF_SIZE_T=4 `
-            -DCMAKE_C_FLAGS=-DSIZEOF_SIZE_T=4 `
+            -DCMAKE_CXX_FLAGS="-DSIZEOF_SIZE_T=4 ${{ matrix.extra-flags }}" `
+            -DCMAKE_C_FLAGS="-DSIZEOF_SIZE_T=4 ${{ matrix.extra-flags }}" `
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.extra-flags }}" `
             -DCMAKE_BUILD_TYPE=Release
 
       # Runs even when Configure fails, which is the point. In run 31018673222 this step was
@@ -210,12 +260,39 @@ jobs:
           CESIUM_ION_TOKEN: ""
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
+      # The measurement that decides whether this leg is usable, not just whether it compiled.
+      #
+      # ImGui.Net's cimgui.a and Evergine's ktx.a -- the two natives that link into a .NET wasm
+      # app today -- contain zero occurrences of these three symbol names. An undefined symbol's
+      # name has to appear as a string in the object that needs it, so counting them in our own
+      # archive says whether it has the same shape. Non-zero means the archive demands the wasm
+      # EH runtime, and every consumer of it has to enable -fwasm-exceptions too.
+      - name: Does the archive have the shape .NET can link
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          archive=$(find build -name 'libCesiumNativeC.a' | head -1)
+          if [ -z "$archive" ]; then
+            echo "No archive produced; nothing to measure."
+            exit 0
+          fi
+          echo "archive: $archive  ($(stat -c%s "$archive") bytes)"
+          for sym in __cpp_exception __wasm_lpad_context _Unwind_CallPersonality \
+                     emscripten_futex_wait pthread_create; do
+            printf '  %-26s %s\n' "$sym" "$(grep -ac "$sym" "$archive" 2>/dev/null || echo 0)"
+          done
+          echo "(zero across the first three is the shape cimgui.a and ktx.a have)"
+
       - name: What came out
         if: always()
         shell: bash
         run: |
           {
-            echo "### CesiumNativeC for wasm32-emscripten"
+            echo "### ${{ matrix.leg }}"
+            echo
+            echo "Extra flags: \`${{ matrix.extra-flags }}\`"
+            echo "Unity flag block stripped from cesium-native: \`${{ matrix.strip-unity-flags }}\`"
             echo
             if [ -d build ]; then
               echo '```'
