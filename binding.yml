@@ -1,0 +1,59 @@
+# Binding manifest — see https://github.com/EvergineTeam/Evergine.Bindings
+# Schema: https://github.com/EvergineTeam/Evergine.Bindings/blob/main/binding.schema.json
+toolbox: 1.25.0
+
+# Read by cpp-wrapper-porter. The profile decides everything the shared conventions
+# deliberately leave open -- identifier scheme, overload policy, how a bump is applied here,
+# how the tests run. Required rather than inferred: reading this codebase would tell the
+# agent what it does, not which of its habits are decisions.
+wrapper:
+  profile: .github/wrapper-profile.md
+  version-macro: CESIUMC_CESIUM_NATIVE_VERSION
+
+# This repository is not a binding: it produces no NuGet package and runs no C# generator.
+# It is the C layer that Cesium.NET binds to, and it carries a manifest so the toolbox can
+# answer "has upstream moved?" here with the same machinery it uses everywhere else.
+upstream:
+  kind: git-submodule
+  language: cpp
+  project: https://github.com/CesiumGS/cesium-native
+  version-from: git-release
+
+  release:
+    repo: CesiumGS/cesium-native
+    # `tags`, not `stable`, and this is the unusual part. CesiumGS tags every release and
+    # publishes **no** GitHub Releases at all -- sixty-odd tags, zero releases -- so
+    # `releases/latest` answers 404 and `stable` cannot resolve here. `tags` reads the tag
+    # list and takes the highest plain version, skipping prerelease suffixes.
+    #
+    # The cost, since it is not free: with `stable` the upstream author decides what counts
+    # as newest, and here we decide by parsing version strings. Needs toolbox >= 1.25.0.
+    track: tags
+    current: v0.61.0
+
+  # report-only. Moving this pointer is not a mechanical edit: there is no generator, so a
+  # C++ API change becomes a compile error that somebody -- or cpp-wrapper-porter -- has to
+  # resolve by hand in src/. And here the bump is three moves rather than one; see the
+  # profile.
+  bump: report-only
+
+  sources:
+    - repo: CesiumGS/cesium-native
+      path: cesium-native
+      format: c-header
+
+# NOTE — CESIUMC_CESIUM_NATIVE_VERSION in include/cesium/cesium_common.h must agree with
+# release.current. It is the only version statement a consumer can read without cloning this
+# repository, and Cesium.NET has no other way to say which Cesium it binds to. Nothing checks
+# the two mechanically, so a bump changes both or the header lies.
+
+# NOTE — a bump here is three edits, not one: the submodule pointer, the vcpkg baseline in
+# vcpkg-configuration.json, and the explicit library list in target_link_libraries. Missing
+# the second or third produces a build that succeeds against the old dependency set, which is
+# worse than one that fails.
+
+# NOTE — patches/cesium-native-wasm-shared-memory-option.patch is applied to the submodule
+# for the browser-wasm build only. It is written in the shape a pull request to cesium-native
+# would take, and it is applied with `git apply --check` first, so a bump that moves the lines
+# it touches fails saying so. If upstream ever accepts the option, delete the patch and pass
+# -DCESIUM_WASM_SHARED_MEMORY=OFF on its own.
