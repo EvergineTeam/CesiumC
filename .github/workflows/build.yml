@@ -52,25 +52,31 @@ jobs:
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: true  # cross-compiled, can't run on x64
 
-          # - os: ubuntu-latest
-          #   arch: x64
-          #   triplet: x64-linux
-          #   generator: Ninja
-          #   cmake-arch: ""
-          #   artifact: linux-x64
-          #   bin-path: build/bin/
-          #   lib-path: build/lib/libCesiumNativeC.*
-          #   skip-tests: false
+          # Enabled 2026-08. These two were commented out in dc951ec, the very first commit, and
+          # never tried since -- there is no recorded failure behind them, only "need a lot of
+          # testing" in that commit message.
+          - os: ubuntu-latest
+            arch: x64
+            triplet: x64-linux
+            generator: Ninja
+            cmake-arch: ""
+            artifact: linux-x64
+            bin-path: build/bin/
+            lib-path: build/lib/libCesiumNativeC.*
+            skip-tests: false
 
-          # - os: ubuntu-24.04-arm
-          #   arch: arm64
-          #   triplet: arm64-linux
-          #   generator: Ninja
-          #   cmake-arch: ""
-          #   artifact: linux-arm64
-          #   bin-path: build/bin/
-          #   lib-path: build/lib/libCesiumNativeC.*
-          #   skip-tests: false
+          # A native arm64 runner rather than a cross-compile from x64. Cross-compiling would
+          # mean an aarch64 toolchain for all thirty vcpkg dependencies; here there is none to
+          # arrange, and the tests actually run.
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            triplet: arm64-linux
+            generator: Ninja
+            cmake-arch: ""
+            artifact: linux-arm64
+            bin-path: build/bin/
+            lib-path: build/lib/libCesiumNativeC.*
+            skip-tests: false
 
           - os: macos-14
             arch: arm64
@@ -81,6 +87,20 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
+
+          # Intel macOS, cross-compiled from the arm64 runner. Apple's clang targets both
+          # architectures from either host, so this needs no special toolchain -- only a triplet
+          # that says x86_64. GitHub's Intel macOS runners are on their way out, so depending on
+          # one would be building a dependency with an expiry date.
+          - os: macos-14
+            arch: x64
+            triplet: x64-osx
+            generator: Ninja
+            cmake-arch: ""
+            artifact: osx-x64
+            bin-path: build/bin/
+            lib-path: build/lib/libCesiumNativeC.*
+            skip-tests: true  # cross-compiled, cannot run on arm64
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.artifact }}
@@ -186,4 +206,143 @@ jobs:
           path: |
             ${{ matrix.bin-path }}
             ${{ matrix.lib-path }}
+          if-no-files-found: error
+
+  # A separate job rather than a matrix row: this needs emsdk, a patch applied to the submodule,
+  # a different vcpkg invocation and a different artifact shape, and threading those through the
+  # desktop matrix with `if:` on half the steps would make both harder to read.
+  wasm:
+    name: browser-wasm
+    runs-on: windows-2022
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # cesium-native puts -pthread and -fwasm-exceptions on every wasm compile, from a single
+      # if(CESIUM_TARGET_WASM) block with no way to opt out. Both are all-or-nothing across a
+      # link, and .NET's browser-wasm uses neither, so an archive carrying them is one no .NET
+      # app can link. The patch gates them behind an option that defaults to ON, so it changes
+      # nothing for anyone else -- it is written in the shape a pull request to cesium-native
+      # would take, so that if upstream accepts it this file is deleted and the option is passed
+      # instead.
+      #
+      # --check first, so a submodule bump that moves those lines fails here saying so, rather
+      # than applying half a patch or silently doing nothing.
+      - name: Patch cesium-native for a single-threaded wasm build
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch=$PWD/patches/cesium-native-wasm-shared-memory-option.patch
+          git -C cesium-native apply --check "$patch"
+          git -C cesium-native apply "$patch"
+          echo "applied $(basename "$patch")"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "3.31.6"
+
+      - name: Install nasm
+        uses: ilammy/setup-nasm@v1
+
+      # The version dotnet/emsdk pins for .NET 10. Matching it is the whole point: a native
+      # archive has to be linkable by the runtime that will consume it.
+      - name: Setup emsdk 3.1.56
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.56
+
+      # ada-url needs the port from vcpkg 2025.02.14 on Emscripten below 4.x. It lands in
+      # cesium-native/extern/vcpkg/ports, which vcpkg-configuration.json already declares as an
+      # overlay, so no configuration change goes with it.
+      - name: Overlay port for ada-url
+        uses: actions/checkout@v6
+        with:
+          repository: microsoft/vcpkg
+          clean: false
+          ref: 2025.02.14
+          path: vcpkg-overlay-temp
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ports/ada-url
+
+      - name: Move the overlay port into place
+        shell: bash
+        run: mv vcpkg-overlay-temp/ports/* cesium-native/extern/vcpkg/ports/
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 62159a45e18f3a9ac0548628dcaf74fcb60c6ff9
+
+      # VCPKG_CHAINLOAD_TOOLCHAIN_FILE goes on the command line, not just in the triplet. A
+      # triplet governs how vcpkg builds ports; without this the dependencies come out wasm32
+      # and this project configures as native x64, and the first symptom is find_package
+      # rejecting a package for its pointer size -- which reads as a missing package.
+      #
+      # --allow-unsupported is for blend2d, whose port declares Supports: !wasm32. Manifest mode
+      # treats that as an error and classic mode only warns, which is why cesium-native's own
+      # Emscripten CI never meets it. blend2d[core] does build for wasm; the Supports field is a
+      # blanket statement about the port including its jit feature, and cesium-native asks for
+      # [core] precisely because wasm has no jit.
+      - name: CMake configure
+        shell: pwsh
+        run: |
+          $emscriptenToolchain = "$env:EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+          if (-not (Test-Path $emscriptenToolchain)) {
+            throw "Emscripten toolchain not found at $emscriptenToolchain"
+          }
+          cmake -S . -B build `
+            -G Ninja `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$emscriptenToolchain" `
+            -DVCPKG_TARGET_TRIPLET=wasm32-emscripten `
+            -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
+            -DCMAKE_CROSSCOMPILING_EMULATOR="$env:EMSDK_NODE" `
+            -DCESIUM_WASM_SHARED_MEMORY=OFF `
+            -DCMAKE_CXX_FLAGS=-DSIZEOF_SIZE_T=4 `
+            -DCMAKE_C_FLAGS=-DSIZEOF_SIZE_T=4 `
+            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
+
+      - name: CMake build
+        run: cmake --build build --target CesiumNativeC --parallel
+
+      - name: Run tests under node
+        env:
+          CESIUM_ION_TOKEN: ""
+        run: cmake --build build --target CesiumNativeCTests --parallel && ctest --test-dir build --output-on-failure --no-tests=error
+
+      # The check that says whether the archive is usable rather than merely built. ImGui.Net's
+      # cimgui.a and Evergine's ktx.a -- the natives that link into a .NET wasm app today --
+      # contain none of these symbols. A non-zero count means this archive demands the wasm
+      # exception runtime, and every consumer would have to enable -fwasm-exceptions to link it.
+      # An undefined symbol's name has to appear as a string in the object that needs it, which
+      # is what makes counting them meaningful without a symbol dumper on the runner.
+      - name: Verify the archive is single-threaded and free of wasm exceptions
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=build/lib/libCesiumNativeC.a
+          test -f "$archive" || { echo "::error::$archive was not produced"; exit 1; }
+          echo "archive: $archive ($(stat -c%s "$archive") bytes)"
+          failed=0
+          for sym in __cpp_exception __wasm_lpad_context _Unwind_CallPersonality pthread_create; do
+            count=$(grep -ac "$sym" "$archive" || true)
+            printf '  %-26s %s\n' "$sym" "$count"
+            if [ "$count" != "0" ]; then
+              echo "::error::$archive references $sym; a .NET wasm app cannot link it as-is"
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CesiumNativeC-browser-wasm
+          path: build/lib/libCesiumNativeC.a
           if-no-files-found: error
