@@ -163,20 +163,28 @@ jobs:
       # CMAKE_SIZEOF_VOID_P is the load-bearing line. 4 means the Emscripten toolchain reached
       # our project; 8 means it did not, and every find_package that follows is comparing a
       # 64-bit consumer against 32-bit packages.
+      # Reports; never fails. The previous version did fail, and taught the obvious lesson the
+      # hard way: it grepped CMakeCache.txt for CMAKE_SIZEOF_VOID_P, EMSCRIPTEN and
+      # CESIUM_TARGET_WASM, none of which are cache variables. grep found nothing, GitHub's bash
+      # runs with -e, and the step died on its first iteration without printing a line -- so a
+      # run whose Configure had finally *succeeded* reported failure and showed no values at all.
+      # The three interesting variables are printed by CesiumC's CMakeLists instead, where they
+      # exist; this step covers the cached ones and the CesiumCurl directory.
       - name: Confirm the wasm configuration took effect
         if: always()
+        continue-on-error: true
         shell: bash
         run: |
-          set -uo pipefail
           if [ ! -f build/CMakeCache.txt ]; then
             echo "No CMakeCache.txt -- configure did not get far enough to write one."
             exit 0
           fi
-          for var in CMAKE_SIZEOF_VOID_P EMSCRIPTEN CESIUM_TARGET_WASM CESIUM_DISABLE_CURL \
-                     CESIUM_USE_EZVCPKG VCPKG_MANIFEST_MODE VCPKG_TARGET_TRIPLET; do
-            value=$(grep -E "^${var}(:[A-Z]+)?=" build/CMakeCache.txt | head -1 | cut -d= -f2-)
-            printf '%-22s = %s\n' "$var" "${value:-(not in cache)}"
+          for var in CESIUM_DISABLE_CURL CESIUM_USE_EZVCPKG VCPKG_MANIFEST_MODE VCPKG_TARGET_TRIPLET; do
+            value=$(grep -E "^${var}(:[A-Z]+)?=" build/CMakeCache.txt 2>/dev/null | head -1 | cut -d= -f2- || true)
+            printf '%-22s = %s\n' "$var" "${value:-(not a cache variable)}"
           done
+          echo "--- pointer size and wasm flags, as CMake reported them ---"
+          grep -E "CesiumNativeC: system=" build/CMakeFiles/CMakeConfigureLog.yaml 2>/dev/null || true
           echo "--- CesiumCurl target configured? ---"
           if [ -d build/cesium-native/CesiumCurl ]; then
             echo "PRESENT -- curl was not disabled, which is wrong for wasm"

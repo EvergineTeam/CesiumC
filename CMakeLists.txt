@@ -37,6 +37,17 @@ if(EMSCRIPTEN)
     set(CESIUM_DISABLE_CURL ON)
 endif()
 
+# Printed rather than left to be inferred. Getting a cross build wrong is quiet: the
+# dependencies come out as wasm32 and the consuming project as native x64, and the first
+# symptom is a find_package rejecting a package for its pointer size, which reads as a missing
+# package. CMAKE_SIZEOF_VOID_P is the line that says which of the two happened, and it is not a
+# cache variable, so a build log is the only place it can be read.
+message(STATUS "CesiumNativeC: system=${CMAKE_SYSTEM_NAME} "
+               "pointer=${CMAKE_SIZEOF_VOID_P} bytes "
+               "EMSCRIPTEN=${EMSCRIPTEN} "
+               "CESIUM_TARGET_WASM=${CESIUM_TARGET_WASM} "
+               "CESIUM_DISABLE_CURL=${CESIUM_DISABLE_CURL}")
+
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/cesium-native
                  ${CMAKE_CURRENT_BINARY_DIR}/cesium-native
                  EXCLUDE_FROM_ALL)
