@@ -24,6 +24,22 @@ extern "C" {
 #endif
 
 /* ============================================================================
+ * Version
+ *
+ * Which cesium-native this wrapper is built against. It is the only statement of that a
+ * consumer can read without cloning this repository and inspecting a submodule pointer, and
+ * Cesium.NET has no other way to say which Cesium it binds to.
+ *
+ * Must agree with upstream.release.current in binding.yml. Nothing enforces that
+ * mechanically, so a bump changes both or it lies.
+ * ========================================================================= */
+
+#define CESIUMC_CESIUM_NATIVE_VERSION_MAJOR 0
+#define CESIUMC_CESIUM_NATIVE_VERSION_MINOR 61
+#define CESIUMC_CESIUM_NATIVE_VERSION_PATCH 0
+#define CESIUMC_CESIUM_NATIVE_VERSION "0.61.0"
+
+/* ============================================================================
  * Error handling
  * ========================================================================= */
 

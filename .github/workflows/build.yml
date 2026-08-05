@@ -5,6 +5,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release-tag:
+        description: >-
+          Publish a release at this tag with the seven libraries attached, e.g. v0.61.0.
+          Leave empty to build and test only. Use the cesium-native version this wrapper
+          targets, so the tag answers "which Cesium is this?" without chasing a submodule.
+        required: false
+        type: string
+        default: ''
 
 # Cancel an in-progress run when a newer commit is pushed to the same ref.
 concurrency:
@@ -38,6 +47,7 @@ jobs:
             generator: "Visual Studio 17 2022"
             cmake-arch: "-A x64"
             artifact: windows-x64
+            rid: win-x64
             osx-architectures: ""
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
@@ -49,6 +59,7 @@ jobs:
             generator: "Visual Studio 17 2022"
             cmake-arch: "-A ARM64"
             artifact: windows-arm64
+            rid: win-arm64
             osx-architectures: ""
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
@@ -63,6 +74,7 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: linux-x64
+            rid: linux-x64
             osx-architectures: ""
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
@@ -77,6 +89,7 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: linux-arm64
+            rid: linux-arm64
             osx-architectures: ""
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
@@ -88,6 +101,7 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: osx-arm64
+            rid: osx-arm64
             osx-architectures: "arm64"
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
@@ -103,6 +117,7 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: osx-x64
+            rid: osx-x64
             osx-architectures: "x86_64"
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
@@ -383,3 +398,125 @@ jobs:
           name: CesiumNativeC-browser-wasm
           path: build/lib/libCesiumNativeC.a
           if-no-files-found: error
+
+  # ── Release ─────────────────────────────────────────────────────────────
+  # Artifacts expire after 90 days; release assets do not. Without this, the only way a
+  # binary reaches Cesium.NET is somebody downloading it by hand, and nothing records which
+  # revision it came from -- which is exactly how that repository ended up with three RIDs
+  # and no account of where they came from.
+  release:
+    needs: [build, wasm]
+    if: inputs.release-tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Collect the built libraries
+        uses: actions/download-artifact@v5
+        with:
+          pattern: CesiumNativeC-*
+          path: assets
+
+      # Each archive holds runtimes/<rid>/native/, so a consumer unpacks it over its tree and
+      # is done.
+      #
+      # The per-platform file selection is explicit rather than a copy of everything, for two
+      # reasons. The Linux and macOS artifacts also contain CesiumNativeCTests, the test
+      # executable, which has no business in a package. And "copy whatever is there" cannot
+      # tell the difference between a platform that shipped its library and one that shipped
+      # only a stray file, so it would happily publish the second.
+      - name: Pack one archive per runtime identifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+
+          shopt -s nullglob
+
+          pack() {
+            local artifact=$1 rid=$2 subdir=$3 pattern=$4 required=$5
+            local src="assets/CesiumNativeC-$artifact/$subdir"
+            local dest="staging/$rid/runtimes/$rid/native"
+
+            # Matches collected and filtered to what exists, so an empty match is reported as
+            # what it is. Letting `cp` discover it produces "cannot stat" or "missing
+            # destination file operand" depending on whether the pattern was a glob, and
+            # neither says which platform failed. Filtering by existence rather than relying on
+            # nullglob because half these patterns are literal filenames, which nullglob leaves
+            # in the array whether the file is there or not.
+            local matches=() candidate
+            for candidate in $src$pattern; do
+              [ -e "$candidate" ] && matches+=("$candidate")
+            done
+            if [ ${#matches[@]} -eq 0 ]; then
+              echo "::error::$rid: nothing matched $src$pattern -- the $artifact build produced no library"
+              exit 1
+            fi
+
+            mkdir -p "$dest"
+            cp "${matches[@]}" "$dest/"
+
+            if [ ! -f "$dest/$required" ]; then
+              echo "::error::$rid: $required not found among $(ls "$dest" | tr '\n' ' ')"
+              exit 1
+            fi
+
+            ( cd "staging/$rid" && zip -qr "$GITHUB_WORKSPACE/release/cesiumnativec-$rid.zip" runtimes )
+            echo "packed cesiumnativec-$rid.zip  ($(find "$dest" -type f | wc -l) file(s))"
+          }
+
+          # Windows links its dependencies dynamically, so the package is CesiumNativeC.dll
+          # plus the nineteen it needs. Linux and macOS link everything statically into one
+          # library. Both are deliberate, and the coherence checks read them the same way.
+          pack windows-x64    win-x64      bin/Release/ '*.dll'                CesiumNativeC.dll
+          pack windows-arm64  win-arm64    bin/Release/ '*.dll'                CesiumNativeC.dll
+          pack linux-x64      linux-x64    bin/         'libCesiumNativeC.so'  libCesiumNativeC.so
+          pack linux-arm64    linux-arm64  bin/         'libCesiumNativeC.so'  libCesiumNativeC.so
+          pack osx-x64        osx-x64      bin/         'libCesiumNativeC.dylib' libCesiumNativeC.dylib
+          pack osx-arm64      osx-arm64    bin/         'libCesiumNativeC.dylib' libCesiumNativeC.dylib
+          pack browser-wasm   browser-wasm ''           'libCesiumNativeC.a'   libCesiumNativeC.a
+
+          echo
+          ls -la release/
+          count=$(ls release/*.zip | wc -l)
+          if [ "$count" -ne 7 ]; then
+            echo "::error::expected 7 archives, got $count. A platform is missing."
+            exit 1
+          fi
+
+      # The tag names the cesium-native release this wrapper targets, so it has to be the one
+      # the manifest records. A release tagged v0.63.0 built from a tree pinned at v0.61.0 is
+      # a lie that only shows up much later, in a consumer.
+      - name: Check the tag matches what the manifest records
+        shell: bash
+        run: |
+          set -euo pipefail
+          recorded=$(python3 -c "import yaml,sys; print(((yaml.safe_load(open('binding.yml',encoding='utf-8')).get('upstream') or {}).get('release') or {}).get('current') or '')")
+          echo "manifest records: $recorded"
+          echo "release tag:      ${{ inputs.release-tag }}"
+          if [ "$recorded" != "${{ inputs.release-tag }}" ]; then
+            echo "::error::binding.yml records $recorded but this release is tagged ${{ inputs.release-tag }}."
+            exit 1
+          fi
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release-tag }}
+          name: ${{ inputs.release-tag }}
+          body: |
+            CesiumNativeC wrapping cesium-native `${{ inputs.release-tag }}`.
+
+            Seven archives, one per runtime identifier. Each contains
+            `runtimes/<rid>/native/`, so unpacking it over a .NET binding repository puts the
+            library where the package expects it.
+
+            `browser-wasm` is a static archive built without `-pthread` and without
+            `-fwasm-exceptions`, which is what .NET's browser-wasm can link. Its HTTP accessor
+            is a placeholder that fails every request; a `fetch`-based one is still to be
+            written.
+          files: release/*.zip
+          fail_on_unmatched_files: true
