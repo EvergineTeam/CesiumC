@@ -213,8 +213,13 @@ CESIUM_API CesiumAsyncSystem* cesium_async_system_create(void);
 CESIUM_API void cesium_async_system_destroy(CesiumAsyncSystem* asyncSystem);
 
 /**
- * @brief Dispatches pending main-thread tasks. Must be called each frame
- * from the main thread.
+ * @brief Dispatches pending main-thread tasks. Must be called each frame from the main thread.
+ *
+ * On a platform with threads this runs continuations that were scheduled back to the main thread,
+ * while the work itself happens on background workers. On a single-threaded build -- Emscripten
+ * without -pthread, which is how .NET's browser-wasm links native code -- there are no workers, so
+ * this call is what runs the background work as well. Skipping it there does not merely delay
+ * callbacks: nothing loads at all.
  */
 CESIUM_API void cesium_async_system_dispatch_main_thread_tasks(CesiumAsyncSystem* asyncSystem);
 

@@ -1,11 +1,14 @@
 /**
  * @file cesium_async.cpp
- * @brief C wrapper for CesiumAsync::AsyncSystem with a lock-free thread pool.
+ * @brief C wrapper for CesiumAsync::AsyncSystem. A lock-free thread pool where threads
+ *        exist; a queue drained from the host's frame where they do not.
  */
 
 #include "cesium_internal.h"
 
 #include <cesium/cesium_tileset.h>
+
+#include "cesium_wrappers.h"
 
 #include <CesiumAsync/AsyncSystem.h>
 #include <CesiumAsync/ITaskProcessor.h>
@@ -16,7 +19,18 @@
 #include <thread>
 #include <vector>
 
+// Threads are available everywhere except Emscripten built without -pthread, which is how .NET's
+// browser-wasm links native code. Emscripten defines __EMSCRIPTEN_PTHREADS__ only when -pthread
+// is passed, so the compiler answers this question rather than the build system -- and a wasm
+// build that *does* enable threads keeps the thread pool without anyone having to remember to
+// flip a flag.
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+#define CESIUMC_NO_THREADS 1
+#endif
+
 namespace {
+
+#ifndef CESIUMC_NO_THREADS
 
 // Vyukov MPMC bounded lock-free queue.
 // Capacity must be a power of two.
@@ -80,7 +94,7 @@ public:
     }
 };
 
-class ThreadPoolTaskProcessor : public CesiumAsync::ITaskProcessor {
+class ThreadPoolTaskProcessor : public CTaskProcessor {
 public:
     explicit ThreadPoolTaskProcessor(
         unsigned int threadCount = std::thread::hardware_concurrency() - 1)
@@ -133,9 +147,46 @@ private:
     std::vector<std::thread> _workers;
 };
 
-} // anonymous namespace
+#else // CESIUMC_NO_THREADS
 
-#include "cesium_wrappers.h"
+// No workers, so startTask() queues and the host's per-frame call runs the queue. See the note on
+// CTaskProcessor in cesium_wrappers.h for why this defers instead of running inline.
+//
+// Single-threaded by construction, so no synchronisation: every method here runs on the one thread
+// there is.
+class DeferredTaskProcessor final : public CTaskProcessor {
+public:
+    void startTask(std::function<void()> f) override {
+        this->_queue.push_back(std::move(f));
+    }
+
+    void drainDeferredTasks() override {
+        // Swap before running, because a task may call startTask() again -- that is the normal
+        // case, not an edge case, since continuations schedule more work. Running from a swapped
+        // batch means the new work lands in _queue for the next round rather than invalidating
+        // the container being iterated.
+        //
+        // Bounded rounds rather than "until empty": a chain of continuations would otherwise hold
+        // the frame for as long as the chain lasts, and in a browser that is a hung tab. Leftover
+        // work simply runs next frame, which is what a frame-driven scheduler is for.
+        constexpr int maxRoundsPerDrain = 8;
+
+        for (int round = 0; round < maxRoundsPerDrain && !this->_queue.empty(); ++round) {
+            std::vector<std::function<void()>> batch;
+            batch.swap(this->_queue);
+            for (auto& task : batch) {
+                task();
+            }
+        }
+    }
+
+private:
+    std::vector<std::function<void()>> _queue;
+};
+
+#endif // CESIUMC_NO_THREADS
+
+} // anonymous namespace
 
 #include <Cesium3DTilesContent/registerAllTileContentTypes.h>
 
@@ -145,7 +196,11 @@ static AsyncSystemWrapper* createAsyncSystemWrapper() {
     std::call_once(g_contentTypesRegistered, []() {
         Cesium3DTilesContent::registerAllTileContentTypes();
     });
-    auto pTP = std::make_shared<ThreadPoolTaskProcessor>();
+#ifdef CESIUMC_NO_THREADS
+    std::shared_ptr<CTaskProcessor> pTP = std::make_shared<DeferredTaskProcessor>();
+#else
+    std::shared_ptr<CTaskProcessor> pTP = std::make_shared<ThreadPoolTaskProcessor>();
+#endif
     auto* w = new AsyncSystemWrapper{pTP, CesiumAsync::AsyncSystem(pTP)};
     return w;
 }
@@ -167,7 +222,13 @@ CESIUM_API void cesium_async_system_destroy(CesiumAsyncSystem* asyncSystem) {
 
 CESIUM_API void cesium_async_system_dispatch_main_thread_tasks(CesiumAsyncSystem* asyncSystem) {
     CESIUM_TRY_BEGIN
-    reinterpret_cast<AsyncSystemWrapper*>(asyncSystem)->asyncSystem.dispatchMainThreadTasks();
+    auto* wrapper = reinterpret_cast<AsyncSystemWrapper*>(asyncSystem);
+
+    // Deferred work first, then the main-thread queue. A background task's continuation is what
+    // lands in the main-thread queue, so running them in this order makes progress within one
+    // call instead of one call per stage. On a platform with threads the first line does nothing.
+    wrapper->pTaskProcessor->drainDeferredTasks();
+    wrapper->asyncSystem.dispatchMainThreadTasks();
     CESIUM_TRY_END
 }
 

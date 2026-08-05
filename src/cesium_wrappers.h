@@ -25,8 +25,25 @@
 #include <string>
 #include <vector>
 
+// A task processor that may need draining from the main thread.
+//
+// cesium-native's ITaskProcessor promises that startTask() runs its function "in a background
+// thread". Where there are threads, that is what happens and drainDeferredTasks() has nothing to
+// do. Where there are none -- Emscripten built without -pthread, which is how .NET's browser-wasm
+// links native code -- startTask() can only queue, and the queue has to be run from somewhere.
+// That somewhere is the host's per-frame call to
+// cesium_async_system_dispatch_main_thread_tasks().
+//
+// Running the function inline inside startTask() was the other option and it is worse: the
+// scheduler calls startTask() from inside its own scope (CesiumAsync/src/TaskScheduler.cpp:30),
+// so a task that schedules another task would recurse through the scheduler with no bound.
+class CTaskProcessor : public CesiumAsync::ITaskProcessor {
+public:
+    virtual void drainDeferredTasks() {}
+};
+
 struct AsyncSystemWrapper {
-    std::shared_ptr<CesiumAsync::ITaskProcessor> pTaskProcessor;
+    std::shared_ptr<CTaskProcessor> pTaskProcessor;
     CesiumAsync::AsyncSystem asyncSystem;
 };
 
