@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-  "$comment": "This dependency list is a second copy of cesium-native's, which applies its own platform guards in CMake rather than in its manifest. Anything upstream excludes for a platform has to be excluded here too, or the guard has no effect: curl and cpp-httplib are unusable in a browser, and blend2d's jit feature needs a JIT that wasm and iOS do not have. When bumping cesium-native, diff its CMakeLists PACKAGES_PRIVATE block against this list.",
+  "$comment": "This dependency list is a second copy of cesium-native's, which applies its own platform guards in its CMakeLists rather than in its manifest. Anything upstream excludes or narrows for a platform has to be excluded or narrowed here too, or the guard has no effect. curl and cpp-httplib are unusable in a browser. blend2d's jit feature needs a JIT that wasm and iOS do not have. ktx takes default-features:false because the port enables its 'js' feature by default on emscripten, and those JavaScript wrappers do not compile against Emscripten 3.1.56's embind; upstream asks for ktx[core] for the same reason, and on native platforms the port has no default features at all so this costs nothing there. When bumping cesium-native, diff its CMakeLists PACKAGES_PRIVATE block against this list.",
   "dependencies": [
     "asyncplusplus",
     {
@@ -16,7 +16,10 @@
     "stb",
     "ada-url",
     "draco",
-    "ktx",
+    {
+      "name": "ktx",
+      "default-features": false
+    },
     "modp-base64",
     "meshoptimizer",
     "openssl",
