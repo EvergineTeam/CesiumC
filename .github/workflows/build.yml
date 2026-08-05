@@ -38,6 +38,7 @@ jobs:
             generator: "Visual Studio 17 2022"
             cmake-arch: "-A x64"
             artifact: windows-x64
+            osx-architectures: ""
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: false
@@ -48,6 +49,7 @@ jobs:
             generator: "Visual Studio 17 2022"
             cmake-arch: "-A ARM64"
             artifact: windows-arm64
+            osx-architectures: ""
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: true  # cross-compiled, can't run on x64
@@ -61,6 +63,7 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: linux-x64
+            osx-architectures: ""
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
@@ -74,6 +77,7 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: linux-arm64
+            osx-architectures: ""
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
@@ -84,6 +88,7 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: osx-arm64
+            osx-architectures: "arm64"
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
@@ -98,6 +103,7 @@ jobs:
             generator: Ninja
             cmake-arch: ""
             artifact: osx-x64
+            osx-architectures: "x86_64"
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: true  # cross-compiled, cannot run on arm64
@@ -152,37 +158,68 @@ jobs:
           & $nuget sources add -Source "$env:NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$env:GITHUB_REPOSITORY_OWNER" -Password "$env:NUGET_TOKEN"
           & $nuget setapikey "$env:NUGET_TOKEN" -Source "$env:NUGET_FEED_URL"
 
+      # Best-effort, and deliberately so. A cache that cannot be reached should cost build time,
+      # not a build: on ubuntu-24.04-arm `vcpkg fetch nuget` exits non-zero and prints nothing,
+      # and because this ran under `-e` the whole leg died on its first command with no
+      # explanation at all. VCPKG_BINARY_SOURCES is now written only once nuget is actually
+      # usable, so failing here leaves vcpkg building from source rather than pointing at a feed
+      # it cannot talk to.
       - name: Set up NuGet binary cache (Unix)
         if: runner.os != 'Windows'
         shell: bash
         env:
           NUGET_TOKEN: ${{ secrets.VCPKG_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then mode=readwrite; else mode=read; fi
-          echo "VCPKG_BINARY_SOURCES=clear;nuget,${NUGET_FEED_URL},${mode}" >> "$GITHUB_ENV"
-          fetch_out="$("$VCPKG_ROOT/vcpkg" fetch nuget)"
+
+          fetch_out="$("$VCPKG_ROOT/vcpkg" fetch nuget 2>&1)"
+          if [ $? -ne 0 ]; then
+            echo "::warning::'vcpkg fetch nuget' failed on this platform; building without a binary cache."
+            echo "$fetch_out"
+            exit 0
+          fi
           echo "vcpkg fetch nuget output:"
           echo "$fetch_out"
-          nuget_path="$(printf '%s\n' "$fetch_out" | grep -v '^[[:space:]]*$' | tail -n 1 || true)"
-          if [ -z "$nuget_path" ]; then echo "Could not resolve nuget path from 'vcpkg fetch nuget'." >&2; exit 1; fi
+
+          nuget_path="$(printf '%s\n' "$fetch_out" | grep -v '^[[:space:]]*$' | tail -n 1)"
+          if [ -z "$nuget_path" ] || [ ! -e "$nuget_path" ]; then
+            echo "::warning::could not resolve a nuget executable; building without a binary cache."
+            exit 0
+          fi
           echo "Resolved nuget: $nuget_path"
+
           # vcpkg may return its own nuget.exe (run via mono) or a system nuget
           # launcher script (e.g. mono's), which must be executed directly.
           case "$nuget_path" in
             *.exe) nuget=(mono "$nuget_path") ;;
             *)     nuget=("$nuget_path") ;;
           esac
-          "${nuget[@]}" sources add -Source "$NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$GITHUB_REPOSITORY_OWNER" -Password "$NUGET_TOKEN"
-          "${nuget[@]}" setapikey "$NUGET_TOKEN" -Source "$NUGET_FEED_URL"
+
+          if ! "${nuget[@]}" sources add -Source "$NUGET_FEED_URL" -StorePasswordInClearText -Name GitHubPackages -UserName "$GITHUB_REPOSITORY_OWNER" -Password "$NUGET_TOKEN"; then
+            echo "::warning::could not register the NuGet source; building without a binary cache."
+            exit 0
+          fi
+          "${nuget[@]}" setapikey "$NUGET_TOKEN" -Source "$NUGET_FEED_URL" || true
+
+          echo "VCPKG_BINARY_SOURCES=clear;nuget,${NUGET_FEED_URL},${mode}" >> "$GITHUB_ENV"
+          echo "binary cache enabled in $mode mode"
 
       # ---- Build ----
 
+      # CMAKE_OSX_ARCHITECTURES has to be passed here, not left to the triplet. A triplet governs
+      # how vcpkg builds ports; the consuming project is configured by these arguments alone. The
+      # first osx-x64 run showed exactly that split: vcpkg produced x86_64 dependencies in
+      # vcpkg_installed/x64-osx, and CMake then linked them with `-arch arm64` because the runner
+      # is arm64 and nothing had said otherwise. Empty on every non-Apple leg, where CMake ignores
+      # it.
       - name: CMake configure
         run: >
           cmake -S . -B build
           -G "${{ matrix.generator }}" ${{ matrix.cmake-arch }}
           -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx-architectures }}
           -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
 
       - name: CMake build
