@@ -1,5 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "$comment": "This dependency list is a second copy of cesium-native's, which applies its own platform guards in CMake rather than in its manifest. Anything upstream excludes for a platform has to be excluded here too, or the guard has no effect: curl and cpp-httplib are unusable in a browser, and blend2d's jit feature needs a JIT that wasm and iOS do not have. When bumping cesium-native, diff its CMakeLists PACKAGES_PRIVATE block against this list.",
   "dependencies": [
     "asyncplusplus",
     {
@@ -24,9 +25,7 @@
     "sqlite3",
     "tinyxml2",
     {
-      "comment": "cpp-httplib hosts a local web server for OAuth2, which cannot work in a browser, and recent versions are 64-bit only. cesium-native skips it for wasm in CMake; this manifest is a second copy of its dependency list and needs the same guard.",
       "name": "cpp-httplib",
-      "default-features": false,
       "platform": "!wasm32"
     },
     "libwebp",
