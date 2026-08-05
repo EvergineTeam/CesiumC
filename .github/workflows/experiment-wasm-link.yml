@@ -1,0 +1,150 @@
+# Throwaway experiment. Not part of the build; delete the branch when the answer is in.
+#
+# Run 31004829159 answered the previous question: cesium-native's 22 libraries and its 28 vcpkg
+# dependencies build for wasm at Emscripten 3.1.56 without -pthread and without
+# -fwasm-exceptions. Three legs, identical results.
+#
+# This asks the next one, which that run deliberately did not cover: does *CesiumNativeC* link.
+# It is a different question for two reasons.
+#
+#   1. CesiumC's dependency set is strictly larger. vcpkg.json adds libjpeg-turbo, cpp-httplib,
+#      blend2d, ms-gsl and doctest on top of what cesium-native pulls. Any one of those could be
+#      the real wasm blocker, and none of them was exercised by the previous run.
+#   2. Linking an executable is a stronger test than producing archives. The test target links
+#      CesiumNativeC into a real binary, so an unresolved symbol shows up here and cannot show
+#      up in a build that only creates .a files.
+#
+# The changes on this branch that make it possible at all:
+#   - AssetAccessorWrapper holds CesiumAsync::IAssetAccessor rather than
+#     CesiumCurl::CurlAssetAccessor, which is what every consumer already needed
+#   - CesiumCurl is linked only when NOT EMSCRIPTEN, and curl is guarded platform=!wasm32
+#   - a placeholder accessor that fails every request with status 0, so the symbol exists
+#   - CesiumNativeC builds STATIC on Emscripten, because .NET's browser-wasm links archives
+#
+# Flags: the "bare" set, which the previous run proved sufficient and which is what ImGui.Net
+# uses -- the configuration already known to link into a .NET wasm app.
+
+name: Experiment - does CesiumNativeC link for wasm
+
+on:
+  push:
+    branches:
+      - 'experiment/**'
+  workflow_dispatch:
+
+env:
+  # Same directory the normal build uses. The wasm triplet is written into it at run time,
+  # copied from cesium-native's, so there is only ever one overlay path to declare.
+  VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/triplets
+
+jobs:
+  wasm:
+    name: wasm32-emscripten
+    runs-on: windows-2022
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "3.31.6"
+
+      - name: Install nasm
+        uses: ilammy/setup-nasm@v1
+
+      - name: Setup emsdk 3.1.56
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.56
+
+      - name: Verify the compiler
+        run: emcc -v
+
+      # Written at run time rather than committed, so this branch carries no triplet that could
+      # outlive the experiment. printf rather than a heredoc: a heredoc body inside a YAML block
+      # scalar cannot start at column 0, and its terminator cannot be indented, so those two
+      # constraints contradict each other.
+      - name: Write the experiment triplet
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=cesium-native/extern/vcpkg/triplets/wasm32-emscripten-cesium.cmake
+          dst=triplets/wasm32-emscripten-exp.cmake
+          grep -vE '^set\(_configureFlags|^set\(VCPKG_CMAKE_CONFIGURE_OPTIONS' "$src" > "$dst"
+          printf 'set(_configureFlags "-DSIZEOF_SIZE_T=4")\n' >> "$dst"
+          printf 'set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DCMAKE_C_FLAGS=${_configureFlags} -DCMAKE_CXX_FLAGS=${_configureFlags} -DCMAKE_EXE_LINKER_FLAGS=${_configureFlags})\n' >> "$dst"
+          printf '\nif(PORT MATCHES "openssl")\n  set(VCPKG_CONFIGURE_MAKE_OPTIONS "no-dso")\nendif()\n' >> "$dst"
+          echo '--- triplet in use ---'
+          cat "$dst"
+
+      # ada-url needs the overlay port from vcpkg 2025.02.14 on Emscripten below 4.x. Lifted
+      # from cesium-native's own 3.1.39 leg; 3.1.56 is in the same pre-4.x family. It lands in
+      # cesium-native/extern/vcpkg/ports, which vcpkg-configuration.json already declares as an
+      # overlay, so no configuration change is needed.
+      - name: Overlay port for ada-url
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          clean: false
+          ref: 2025.02.14
+          path: vcpkg-overlay-temp
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ports/ada-url
+
+      - name: Move the overlay port into place
+        shell: bash
+        run: mv vcpkg-overlay-temp/ports/* cesium-native/extern/vcpkg/ports/
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 62159a45e18f3a9ac0548628dcaf74fcb60c6ff9
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          emcmake cmake -S . -B build `
+            -G Ninja `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=wasm32-emscripten-exp `
+            -DCMAKE_BUILD_TYPE=Release
+
+      # The library first, on its own, so a failure here is unambiguously "the wrapper does not
+      # compile for wasm" rather than anything about the test binary.
+      - name: Build the library
+        run: cmake --build build --target CesiumNativeC --parallel
+
+      # Then the executable. This is the step that answers the real question: an archive can be
+      # produced with unresolved references, a linked binary cannot.
+      - name: Link the test executable
+        run: cmake --build build --target CesiumNativeCTests --parallel
+
+      # And run it under node, which emcmake wires up as the crosscompiling emulator. The tests
+      # are offline (no Ion token), so a pass here means the wrapper actually starts in a wasm
+      # runtime rather than merely linking.
+      - name: Run the tests under node
+        env:
+          CESIUM_ION_TOKEN: ""
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: What came out
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### CesiumNativeC for wasm32-emscripten"
+            echo
+            if [ -d build ]; then
+              echo '```'
+              find build -maxdepth 3 \( -name 'libCesiumNativeC.a' -o -name 'CesiumNativeCTests*' \) \
+                -printf '%p  %s bytes\n' 2>/dev/null | sort
+              echo '```'
+            else
+              echo "No build directory -- configure did not get that far."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

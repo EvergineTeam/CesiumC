@@ -17,7 +17,6 @@
 #include <CesiumAsync/AsyncSystem.h>
 #include <CesiumAsync/IAssetAccessor.h>
 #include <CesiumAsync/ITaskProcessor.h>
-#include <CesiumCurl/CurlAssetAccessor.h>
 #include <CesiumUtility/CreditSystem.h>
 
 #include <cesium/cesium_tileset.h>
@@ -32,7 +31,13 @@ struct AsyncSystemWrapper {
 };
 
 struct AssetAccessorWrapper {
-    std::shared_ptr<CesiumCurl::CurlAssetAccessor> pAccessor;
+    // The interface, not the implementation. Everything downstream of this struct --
+    // cesium_ion.cpp and cesium_tileset.cpp -- only ever passes pAccessor where an
+    // IAssetAccessor is expected, so naming the concrete type here bought nothing and cost
+    // the ability to have more than one. CesiumCurl is excluded from wasm builds upstream
+    // (platform=!wasm32), which made this struct alone enough to make the wrapper
+    // unbuildable for the browser.
+    std::shared_ptr<CesiumAsync::IAssetAccessor> pAccessor;
 };
 
 struct CreditSystemWrapper {

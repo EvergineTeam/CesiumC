@@ -11,7 +11,6 @@
 
 #include <CesiumAsync/AsyncSystem.h>
 #include <CesiumAsync/IAssetAccessor.h>
-#include <CesiumCurl/CurlAssetAccessor.h>
 #include <CesiumIonClient/ApplicationData.h>
 #include <CesiumIonClient/Assets.h>
 #include <CesiumIonClient/Connection.h>

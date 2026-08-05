@@ -21,7 +21,16 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/cesium-native
 
 # ---------- CesiumNativeC shared library ----------
 
-add_library(CesiumNativeC SHARED
+# STATIC on Emscripten. A wasm "shared library" is a SIDE_MODULE, which is not how .NET's
+# browser-wasm consumes native code: it links archives into the app, which is what ImGui.Net's
+# cimgui.a does today. Everywhere else this stays a real shared library, unchanged.
+if(EMSCRIPTEN)
+    set(CESIUM_NATIVE_C_LIBRARY_TYPE STATIC)
+else()
+    set(CESIUM_NATIVE_C_LIBRARY_TYPE SHARED)
+endif()
+
+add_library(CesiumNativeC ${CESIUM_NATIVE_C_LIBRARY_TYPE}
     src/cesium_errors.cpp
     src/cesium_geospatial.cpp
     src/cesium_gltf.cpp
@@ -62,9 +71,16 @@ target_link_libraries(CesiumNativeC
         CesiumRasterOverlays
         CesiumIonClient
         CesiumClientCommon
-        CesiumCurl
         CesiumAsync
 )
+
+# CesiumCurl only where it exists. Upstream's vcpkg manifest marks curl platform=!wasm32 and
+# cesium-native does not build the CesiumCurl target for Emscripten at all, so naming it here
+# unconditionally was enough on its own to make the wrapper unbuildable for the browser.
+# src/cesium_asset_accessor.cpp supplies a placeholder accessor in its place.
+if(NOT EMSCRIPTEN)
+    target_link_libraries(CesiumNativeC PRIVATE CesiumCurl)
+endif()
 
 # On Windows, place the DLL in a predictable output directory.
 set_target_properties(CesiumNativeC PROPERTIES

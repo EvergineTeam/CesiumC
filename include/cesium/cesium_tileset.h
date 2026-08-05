@@ -219,12 +219,18 @@ CESIUM_API void cesium_async_system_destroy(CesiumAsyncSystem* asyncSystem);
 CESIUM_API void cesium_async_system_dispatch_main_thread_tasks(CesiumAsyncSystem* asyncSystem);
 
 /* ============================================================================
- * AssetAccessor (HTTP client via libcurl)
+ * AssetAccessor (HTTP client)
  * ========================================================================= */
 
 /**
- * @brief Creates an asset accessor using libcurl.
- * @param userAgent The User-Agent header string, or NULL for default.
+ * @brief Creates an asset accessor.
+ *
+ * Backed by libcurl on every platform where CesiumCurl is available, which upstream defines as
+ * everything except wasm32. On Emscripten this returns a valid accessor that fails every
+ * request with status 0 -- the browser needs a fetch-based implementation, and there is not one
+ * yet. The handle is real and safe to pass around either way; only the transport differs.
+ *
+ * @param userAgent The User-Agent header string, or NULL for default. Ignored on Emscripten.
  */
 CESIUM_API CesiumAssetAccessor* cesium_asset_accessor_create(const char* userAgent);
 
