@@ -1,4 +1,9 @@
-name: Build
+# Named "CI" rather than "Build" so ci-doctor can see it. That agent triggers on
+# `workflow_run` filtered to workflows literally named "CI", "CD" or "Sync standards", so a
+# repository whose build is called anything else gets an agent that is installed, compiles,
+# and can never fire. JoltPhysicsC has exactly that today -- its workflow is called
+# "Build JoltC Libraries" and ci-doctor has zero runs there.
+name: CI
 
 on:
   push:
