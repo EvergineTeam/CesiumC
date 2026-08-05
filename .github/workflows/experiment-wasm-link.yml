@@ -120,33 +120,68 @@ jobs:
       #
       # If this experiment leads to a supported wasm build, the durable fix is an overlay port
       # that relaxes Supports for the core feature, not a blanket flag.
+      # VCPKG_CHAINLOAD_TOOLCHAIN_FILE has to be passed here, on the command line, and that is
+      # the whole fix for run 31018673222.
+      #
+      # The triplet already sets it, but a triplet governs how vcpkg builds *ports*. For the
+      # consuming project, CMAKE_TOOLCHAIN_FILE is vcpkg.cmake and nothing chainloaded
+      # Emscripten's toolchain into it -- so all 32 dependencies built correctly as wasm32 while
+      # our own configure ran as native x64 Windows. It failed at:
+      #
+      #   Could not find a configuration file for package "ada" ...
+      #     .../share/ada/ada-config.cmake, version: 2.9.2 (32bit)
+      #
+      # "(32bit)" is CMake's annotation for a package rejected on pointer size. The package was
+      # right; the consumer was 64-bit. Passing the chainload explicitly is the documented way to
+      # combine vcpkg with Emscripten.
+      #
+      # It also means EMSCRIPTEN was not defined in that run, so CesiumC's own
+      # `if(EMSCRIPTEN) set(CESIUM_TARGET_WASM ON) ...` never fired either. One missing argument,
+      # two silent wrong turns -- which is why the check below now runs even on failure.
       - name: Configure
         shell: pwsh
         run: |
-          emcmake cmake -S . -B build `
+          $emscriptenToolchain = "$env:EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+          if (-not (Test-Path $emscriptenToolchain)) {
+            throw "Emscripten toolchain not found at $emscriptenToolchain"
+          }
+          cmake -S . -B build `
             -G Ninja `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$emscriptenToolchain" `
             -DVCPKG_TARGET_TRIPLET=wasm32-emscripten-exp `
             -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
+            -DCMAKE_CROSSCOMPILING_EMULATOR="$env:EMSDK_NODE" `
+            -DCMAKE_CXX_FLAGS=-DSIZEOF_SIZE_T=4 `
+            -DCMAKE_C_FLAGS=-DSIZEOF_SIZE_T=4 `
             -DCMAKE_BUILD_TYPE=Release
 
-      # Proof that upstream's wasm branches were actually taken. CESIUM_TARGET_WASM is set by
-      # CesiumC's CMakeLists from EMSCRIPTEN, because upstream's own detection looks at the
-      # *name* of CMAKE_TOOLCHAIN_FILE and here that name is vcpkg.cmake. If this prints OFF,
-      # the rest of the run is measuring the wrong configuration.
+      # Runs even when Configure fails, which is the point. In run 31018673222 this step was
+      # skipped, so a 25-minute run reported "ada not found" and said nothing about the two
+      # things that actually explained it: the project was 64-bit and EMSCRIPTEN was undefined.
+      #
+      # CMAKE_SIZEOF_VOID_P is the load-bearing line. 4 means the Emscripten toolchain reached
+      # our project; 8 means it did not, and every find_package that follows is comparing a
+      # 64-bit consumer against 32-bit packages.
       - name: Confirm the wasm configuration took effect
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          for var in CESIUM_TARGET_WASM CESIUM_DISABLE_CURL CESIUM_USE_EZVCPKG VCPKG_MANIFEST_MODE; do
-            printf '%s = %s\n' "$var" "$(grep -E "^${var}(:[A-Z]+)?=" build/CMakeCache.txt | head -1 | cut -d= -f2- || echo '(not in cache)')"
+          set -uo pipefail
+          if [ ! -f build/CMakeCache.txt ]; then
+            echo "No CMakeCache.txt -- configure did not get far enough to write one."
+            exit 0
+          fi
+          for var in CMAKE_SIZEOF_VOID_P EMSCRIPTEN CESIUM_TARGET_WASM CESIUM_DISABLE_CURL \
+                     CESIUM_USE_EZVCPKG VCPKG_MANIFEST_MODE VCPKG_TARGET_TRIPLET; do
+            value=$(grep -E "^${var}(:[A-Z]+)?=" build/CMakeCache.txt | head -1 | cut -d= -f2-)
+            printf '%-22s = %s\n' "$var" "${value:-(not in cache)}"
           done
-          echo "--- CesiumCurl target built? ---"
+          echo "--- CesiumCurl target configured? ---"
           if [ -d build/cesium-native/CesiumCurl ]; then
-            echo "CesiumCurl directory PRESENT -- curl was not disabled, which is wrong for wasm"
-            exit 1
+            echo "PRESENT -- curl was not disabled, which is wrong for wasm"
           else
-            echo "CesiumCurl absent, as expected"
+            echo "absent, as expected"
           fi
 
       # The library first, on its own, so a failure here is unambiguously "the wrapper does not
