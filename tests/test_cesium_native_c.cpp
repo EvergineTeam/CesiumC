@@ -1337,7 +1337,7 @@ static int test_gltf_material_texture_sampler_image() {
     std::memset(&material, 0, sizeof(material));
     ASSERT_EQ(cesium_gltf_material_get_data(model, 0, &material), 1);
     ASSERT_TRUE(material.doubleSided != 0);
-    ASSERT_EQ(material.baseColorTexture.index, 0);
+    ASSERT_EQ(material.baseColorTexture.textureIndex, 0);
 
     ASSERT_EQ(cesium_gltf_texture_get_source(model, 0), 0);
     ASSERT_EQ(cesium_gltf_texture_get_sampler(model, 0), 0);
@@ -1534,10 +1534,10 @@ static int test_raster_overlay_collection() {
         cesium_tileset_externals_create(async, accessor, credits);
     ASSERT_NOT_NULL(externals);
 
-    CesiumTilesetOptions options;
-    cesium_tileset_options_default(&options);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    ASSERT_NOT_NULL(options);
     CesiumTileset* tileset = cesium_tileset_create_from_url(
-        externals, "https://example.invalid/tileset.json", &options);
+        externals, "https://example.invalid/tileset.json", options);
     ASSERT_NOT_NULL(tileset);
 
     CesiumRasterOverlayCollection* collection = cesium_tileset_get_overlays(tileset);
@@ -1554,6 +1554,7 @@ static int test_raster_overlay_collection() {
     cesium_raster_overlay_collection_remove(collection, overlay);
 
     cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
     cesium_tileset_externals_destroy(externals);
     cesium_credit_system_destroy(credits);
     cesium_asset_accessor_destroy(accessor);
@@ -1597,25 +1598,27 @@ static int test_ion_connection_create_destroy() {
  * ========================================================================= */
 
 static int test_ellipsoid_unit_sphere() {
-    CesiumEllipsoid* unit = cesium_ellipsoid_unit_sphere();
+    const CesiumEllipsoid* unit = cesium_ellipsoid_unit_sphere();
     ASSERT_NOT_NULL(unit);
     ASSERT_NEAR(cesium_ellipsoid_get_maximum_radius(unit), 1.0, 1e-12);
     ASSERT_NEAR(cesium_ellipsoid_get_minimum_radius(unit), 1.0, 1e-12);
 
     /* On a unit sphere the surface normal at a point is the normalised point, which makes
        this the one ellipsoid whose expected answer can be written down by hand. */
-    double normal[3] = {0.0, 0.0, 0.0};
-    cesium_ellipsoid_geodetic_surface_normal_cartesian(unit, 3.0, 0.0, 0.0, normal);
-    ASSERT_NEAR(normal[0], 1.0, 1e-12);
-    ASSERT_NEAR(normal[1], 0.0, 1e-12);
-    ASSERT_NEAR(normal[2], 0.0, 1e-12);
+    CesiumVec3 onX = {3.0, 0.0, 0.0};
+    CesiumVec3 normal = cesium_ellipsoid_geodetic_surface_normal_cartesian(unit, onX);
+    ASSERT_NEAR(normal.x, 1.0, 1e-12);
+    ASSERT_NEAR(normal.y, 0.0, 1e-12);
+    ASSERT_NEAR(normal.z, 0.0, 1e-12);
 
-    cesium_ellipsoid_geodetic_surface_normal_cartesian(unit, 0.0, 0.0, -5.0, normal);
-    ASSERT_NEAR(normal[0], 0.0, 1e-12);
-    ASSERT_NEAR(normal[1], 0.0, 1e-12);
-    ASSERT_NEAR(normal[2], -1.0, 1e-12);
+    CesiumVec3 belowZ = {0.0, 0.0, -5.0};
+    normal = cesium_ellipsoid_geodetic_surface_normal_cartesian(unit, belowZ);
+    ASSERT_NEAR(normal.x, 0.0, 1e-12);
+    ASSERT_NEAR(normal.y, 0.0, 1e-12);
+    ASSERT_NEAR(normal.z, -1.0, 1e-12);
 
-    cesium_ellipsoid_destroy(unit);
+    /* Not destroyed: unit_sphere returns a const singleton, the same shape as
+       cesium_ellipsoid_wgs84, and the existing tests do not destroy that one either. */
     return 0;
 }
 
@@ -1632,10 +1635,10 @@ static int test_tileset_from_url_render_content() {
 
     /* Construction records the URL; nothing is fetched until the tileset is updated, so an
        unreachable host is fine and keeps this offline. */
-    CesiumTilesetOptions options;
-    cesium_tileset_options_default(&options);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    ASSERT_NOT_NULL(options);
     CesiumTileset* tileset = cesium_tileset_create_from_url(
-        externals, "https://example.invalid/tileset.json", &options);
+        externals, "https://example.invalid/tileset.json", options);
     ASSERT_NOT_NULL(tileset);
 
     /* Without a successful load there is no root tile. If one exists anyway, its content
@@ -1652,6 +1655,7 @@ static int test_tileset_from_url_render_content() {
     }
 
     cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
     cesium_tileset_externals_destroy(externals);
     cesium_credit_system_destroy(credits);
     cesium_asset_accessor_destroy(accessor);
@@ -1688,10 +1692,10 @@ static int test_tileset_callback_registration() {
     cesium_tileset_externals_set_renderer_resource_callbacks(externals, &callbacks);
     cesium_tileset_externals_set_renderer_resource_callbacks(externals, nullptr);
 
-    CesiumTilesetOptions options;
-    cesium_tileset_options_default(&options);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    ASSERT_NOT_NULL(options);
     CesiumTileset* tileset = cesium_tileset_create_from_url(
-        externals, "https://example.invalid/tileset.json", &options);
+        externals, "https://example.invalid/tileset.json", options);
     ASSERT_NOT_NULL(tileset);
 
     /* The host is unreachable, so this callback will not fire -- which is the point. It is
@@ -1702,6 +1706,7 @@ static int test_tileset_callback_registration() {
     cesium_tileset_set_root_tile_available_callback(tileset, nullptr, nullptr);
 
     cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
     cesium_tileset_externals_destroy(externals);
     cesium_credit_system_destroy(credits);
     cesium_asset_accessor_destroy(accessor);
