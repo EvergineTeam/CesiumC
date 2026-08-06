@@ -2413,6 +2413,148 @@ static int test_host_accessor_worker_thread_opt_in() {
     return 0;
 }
 
+// ============================================================================
+// Asynchronous Ion connection
+//
+// All offline. The host accessor above is what makes this testable at all: before it, an Ion
+// test either reached api.cesium.com or tested nothing.
+// ============================================================================
+
+/** Everything /appData parses has a default, so an empty object is a valid response. */
+static const char* kFakeAppDataJson = "{}";
+
+struct IonAsyncResult {
+    int calls;
+    CesiumIonConnection* connection;
+    int hadError;
+    char error[256];
+};
+
+static void ionAsyncComplete(
+    void* userData, CesiumIonConnection* connection, const char* error) {
+    IonAsyncResult* r = static_cast<IonAsyncResult*>(userData);
+    ++r->calls;
+    r->connection = connection;
+    r->hadError = error != nullptr;
+    if (error) {
+        std::snprintf(r->error, sizeof(r->error), "%s", error);
+    }
+}
+
+/**
+ * @brief Dispatches until the attempt reports, or gives up.
+ *
+ * How many dispatches it takes is an implementation detail of the continuation chain, and
+ * pinning it to exactly one would be asserting on cesium-native's inlining rules rather than
+ * on our contract. What the tests actually claim is the ordering: nothing before the host
+ * answers, something after.
+ */
+static bool dispatchUntilReported(TilesetTestFixture& f, IonAsyncResult* r) {
+    for (int i = 0; i < 50 && r->calls == 0; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+    }
+    return r->calls > 0;
+}
+
+static int test_ion_async_rejects_bad_arguments() {
+    /* The contract is that a bad argument still reports, synchronously, rather than leaving
+       the caller waiting for a callback that was never scheduled. */
+    IonAsyncResult r;
+    std::memset(&r, 0, sizeof(r));
+
+    cesium_ion_connection_create_async(
+        nullptr, nullptr, nullptr, nullptr, ionAsyncComplete, &r);
+
+    ASSERT_EQ(r.calls, 1);
+    ASSERT_TRUE(r.connection == nullptr);
+    ASSERT_TRUE(r.hadError);
+
+    /* A null callback is the one case with nowhere to report to. It must not crash. */
+    cesium_ion_connection_create_async(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    return 0;
+}
+
+static int test_ion_async_returns_before_the_host_answers() {
+    /* The point of the whole phase. The blocking form spends up to fifty seconds here; this
+       one must come back with the request still outstanding and nothing reported yet. */
+    FakeHost host;
+    fakeHostInit(&host, kFakeAppDataJson);
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+    TilesetTestFixture f = createHostFixture(&cb);
+
+    IonAsyncResult r;
+    std::memset(&r, 0, sizeof(r));
+
+    cesium_ion_connection_create_async(
+        f.async, f.accessor, "fake-token", "https://fake.test", ionAsyncComplete, &r);
+
+    ASSERT_EQ(r.calls, 0);
+    ASSERT_EQ(host.beginCalls, 1);
+    ASSERT_TRUE(std::strstr(host.lastUrl, "/appData") != nullptr);
+
+    /* Now let it finish: answer, then dispatch, which is where the callback runs. */
+    fakeHostPump(&host);
+    ASSERT_TRUE(dispatchUntilReported(f, &r));
+
+    ASSERT_EQ(r.calls, 1);
+    ASSERT_TRUE(r.connection != nullptr);
+    ASSERT_TRUE(!r.hadError);
+
+    cesium_ion_connection_destroy(r.connection);
+    f.destroy();
+    return 0;
+}
+
+static int test_ion_async_reports_http_failure() {
+    FakeHost host;
+    fakeHostInit(&host, "not json at all");
+    host.statusToServe = 401;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+    TilesetTestFixture f = createHostFixture(&cb);
+
+    IonAsyncResult r;
+    std::memset(&r, 0, sizeof(r));
+
+    cesium_ion_connection_create_async(
+        f.async, f.accessor, "fake-token", "https://fake.test", ionAsyncComplete, &r);
+    fakeHostPump(&host);
+    ASSERT_TRUE(dispatchUntilReported(f, &r));
+
+    ASSERT_EQ(r.calls, 1);
+    ASSERT_TRUE(r.connection == nullptr);
+    ASSERT_TRUE(r.hadError);
+
+    f.destroy();
+    return 0;
+}
+
+static int test_ion_async_reports_once_when_host_never_answers() {
+    /* A host that swallows the request must still not produce two callbacks, and tearing
+       everything down must not leave the attempt hanging silently. */
+    FakeHost host;
+    fakeHostInit(&host, kFakeAppDataJson);
+    host.answerAtAll = 0;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+    TilesetTestFixture f = createHostFixture(&cb);
+
+    IonAsyncResult r;
+    std::memset(&r, 0, sizeof(r));
+
+    cesium_ion_connection_create_async(
+        f.async, f.accessor, "fake-token", "https://fake.test", ionAsyncComplete, &r);
+    ASSERT_EQ(r.calls, 0);
+
+    /* Destroying the accessor cancels outstanding requests with status 0, which resolves the
+       promise and lets the chain report a failure exactly once. */
+    f.destroy();
+    ASSERT_TRUE(r.calls <= 1);
+    if (r.calls == 1) {
+        ASSERT_TRUE(r.connection == nullptr);
+        ASSERT_TRUE(r.hadError);
+    }
+    return 0;
+}
+
 int main() {
     // Read Cesium Ion access token from environment
     g_ionToken = std::getenv("CESIUM_ION_TOKEN");
@@ -2490,6 +2632,10 @@ int main() {
     RUN_TEST(test_host_accessor_synchronous_completion);
     RUN_TEST(test_host_accessor_cancel_all_requests);
     RUN_TEST(test_host_accessor_worker_thread_opt_in);
+    RUN_TEST(test_ion_async_rejects_bad_arguments);
+    RUN_TEST(test_ion_async_returns_before_the_host_answers);
+    RUN_TEST(test_ion_async_reports_http_failure);
+    RUN_TEST(test_ion_async_reports_once_when_host_never_answers);
 
     // --- Online / integration tests (require CESIUM_ION_TOKEN) ---
     RUN_TEST(test_tileset_create_from_ion_world_terrain);

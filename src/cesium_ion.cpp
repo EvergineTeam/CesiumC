@@ -20,6 +20,7 @@
 
 #include <CesiumUtility/Result.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -101,6 +102,95 @@ CESIUM_API CesiumIonConnection* cesium_ion_connection_create(
     return reinterpret_cast<CesiumIonConnection*>(wrapper);
     CESIUM_TRY_END
     return nullptr;
+}
+
+CESIUM_API void cesium_ion_connection_create_async(
+    CesiumAsyncSystem* asyncSystem,
+    CesiumAssetAccessor* accessor,
+    const char* accessToken,
+    const char* apiUrl,
+    CesiumIonConnectionCompleteCallback callback,
+    void* userData)
+{
+    // With no callback there is nowhere to report anything, so there is nothing worth
+    // starting. Every other early exit below reports, so that no caller ever waits for an
+    // attempt that was never made.
+    if (!callback) return;
+
+    if (!asyncSystem || !accessor || !accessToken) {
+        callback(
+            userData,
+            nullptr,
+            "asyncSystem, accessor and accessToken are all required");
+        return;
+    }
+
+    // This function does not use CESIUM_TRY_BEGIN/END. That macro records the error and
+    // returns, which for a callback-shaped API means the caller waits forever for a result
+    // that is never coming. The flag makes the header's promise -- exactly one invocation --
+    // true even if the setup throws after the chain has already reported. It is atomic
+    // because the setup may run on a worker thread while continuations run on the main one.
+    auto pReported = std::make_shared<std::atomic<bool>>(false);
+    auto report = [callback, userData, pReported](
+                      CesiumIonConnection* conn, const char* error) {
+        if (!pReported->exchange(true)) {
+            callback(userData, conn, error);
+        }
+    };
+
+    try {
+
+    auto* asyncWrapper = reinterpret_cast<AsyncSystemWrapper*>(asyncSystem);
+    auto* accessorWrapper = reinterpret_cast<AssetAccessorWrapper*>(accessor);
+
+    // Copy what the continuation needs rather than capturing the wrappers. An AsyncSystem is
+    // a pair of shared_ptrs and the accessor is refcounted, so holding them by value keeps
+    // the attempt safe against a caller that destroys either handle while it is in flight --
+    // which the blocking form above cannot promise, because it captures locals by reference
+    // and abandons them if its fifty-second loop expires.
+    CesiumAsync::AsyncSystem async = asyncWrapper->asyncSystem;
+    std::shared_ptr<CesiumAsync::IAssetAccessor> pAccessor = accessorWrapper->pAccessor;
+    std::string url = apiUrl ? std::string(apiUrl) : "https://api.cesium.com";
+    std::string token(accessToken);
+
+    using AppDataResponse =
+        CesiumIonClient::Response<CesiumIonClient::ApplicationData>;
+
+    CesiumIonClient::Connection::appData(async, pAccessor, url)
+        // The catch comes first on purpose. It turns a rejected future into an ordinary
+        // valueless Response, so the single continuation below is the only place that can
+        // invoke the host's callback -- exactly once, on every path.
+        .catchInMainThread([](std::exception&& e) {
+            return AppDataResponse(0, "TransportError", e.what());
+        })
+        .thenInMainThread(
+            [async, pAccessor, url, token, report](
+                AppDataResponse&& response) {
+                if (!response.value) {
+                    std::string message =
+                        response.errorMessage.empty()
+                            ? std::string(
+                                  "Failed to retrieve Ion application data")
+                            : response.errorMessage;
+                    report(nullptr, message.c_str());
+                    return;
+                }
+
+                auto pConn = std::make_unique<CesiumIonClient::Connection>(
+                    async, pAccessor, token, *response.value, url);
+                auto* wrapper =
+                    new IonConnectionWrapper{std::move(pConn), pAccessor};
+                report(
+                    reinterpret_cast<CesiumIonConnection*>(wrapper), nullptr);
+            });
+
+    } catch (const std::exception& e) {
+        cesium_set_last_error(e.what());
+        report(nullptr, e.what());
+    } catch (...) {
+        cesium_set_last_error("Unknown C++ exception");
+        report(nullptr, "Unknown C++ exception");
+    }
 }
 
 CESIUM_API void cesium_ion_connection_destroy(CesiumIonConnection* connection) {
