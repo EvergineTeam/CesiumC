@@ -1570,23 +1570,27 @@ static int test_raster_overlay_collection() {
  * bug would live anyway, as opposed to a service bug.
  * ========================================================================= */
 
-static int test_ion_connection_create_destroy() {
+static int test_ion_connection_argument_guards() {
     CesiumAsyncSystem* async = cesium_async_system_create();
     ASSERT_NOT_NULL(async);
     CesiumAssetAccessor* accessor = cesium_asset_accessor_create("CesiumC-tests");
     ASSERT_NOT_NULL(accessor);
 
-    /* A connection is a handle over a token; constructing one contacts nothing. */
-    CesiumIonConnection* connection =
-        cesium_ion_connection_create(async, accessor, "not-a-real-token", nullptr);
-    ASSERT_NOT_NULL(connection);
-    cesium_ion_connection_destroy(connection);
-
-    /* An explicit API URL takes the same path, and is the argument a self-hosted Ion needs. */
-    CesiumIonConnection* selfHosted = cesium_ion_connection_create(
-        async, accessor, "not-a-real-token", "https://ion.example.invalid/");
-    ASSERT_NOT_NULL(selfHosted);
-    cesium_ion_connection_destroy(selfHosted);
+    /* Only the argument guards, and deliberately so.
+     *
+     * cesium_ion_connection_create is not a constructor despite reading like one: it fetches
+     * ApplicationData from the API URL and pumps the main thread in a 5000 x 10ms loop
+     * waiting for it. So a successful call needs the network and an unreachable host costs
+     * fifty seconds before returning NULL. An earlier version of this test called it with a
+     * NULL apiUrl and passed -- by reaching api.cesium.com from CI, which is not a test being
+     * offline, it is a test whose result depends on somebody else's uptime.
+     *
+     * The guards below return before any of that, so they are the part that can be checked
+     * here. Constructing a real connection lives with the other token-dependent tests.
+     */
+    ASSERT_NULL(cesium_ion_connection_create(nullptr, accessor, "token", nullptr));
+    ASSERT_NULL(cesium_ion_connection_create(async, nullptr, "token", nullptr));
+    ASSERT_NULL(cesium_ion_connection_create(async, accessor, nullptr, nullptr));
 
     cesium_asset_accessor_destroy(accessor);
     cesium_async_system_destroy(async);
@@ -1768,7 +1772,7 @@ int main() {
     RUN_TEST(test_raster_overlay_collection);
 
     // --- Ion object lifecycle, which needs no token ---
-    RUN_TEST(test_ion_connection_create_destroy);
+    RUN_TEST(test_ion_connection_argument_guards);
 
     // --- The remaining geospatial and tileset gaps ---
     RUN_TEST(test_ellipsoid_unit_sphere);
