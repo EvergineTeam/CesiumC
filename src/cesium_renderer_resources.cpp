@@ -8,7 +8,7 @@
 
 #include <Cesium3DTilesSelection/Tile.h>
 #include <Cesium3DTilesSelection/TileContent.h>
-#include <CesiumGltf/ImageAsset.h>
+#include <CesiumImage/ImageAsset.h>
 #include <CesiumRasterOverlays/RasterOverlayTile.h>
 
 #include <variant>
@@ -79,7 +79,7 @@ void CCallbackRendererResources::free(
 }
 
 void* CCallbackRendererResources::prepareRasterInLoadThread(
-    CesiumGltf::ImageAsset& image,
+    CesiumImage::ImageAsset& image,
     const std::any& /*rendererOptions*/)
 {
     if (_callbacks.prepareRasterInLoadThread) {
@@ -87,7 +87,7 @@ void* CCallbackRendererResources::prepareRasterInLoadThread(
         // so the mip array can be passed through without copying.
         static_assert(
             sizeof(CesiumImageMipPosition) ==
-                sizeof(CesiumGltf::ImageAssetMipPosition),
+                sizeof(CesiumImage::ImageAssetMipPosition),
             "CesiumImageMipPosition must match ImageAssetMipPosition layout");
         static_assert(
             static_cast<int>(CesiumGltf::GpuCompressedPixelFormat::NONE) ==

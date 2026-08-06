@@ -213,7 +213,7 @@ CesiumGltf::GpuCompressedPixelFormat toNative(CesiumGpuCompressedPixelFormat f) 
 }
 
 void copyKtx2TargetsToC(
-    const CesiumGltf::Ktx2TranscodeTargets& src,
+    const CesiumImage::Ktx2TranscodeTargets& src,
     CesiumKtx2TranscodeTargets& dst) {
     dst.ETC1S_R = toC(src.ETC1S_R);
     dst.ETC1S_RG = toC(src.ETC1S_RG);
@@ -227,7 +227,7 @@ void copyKtx2TargetsToC(
 
 void copyKtx2TargetsToNative(
     const CesiumKtx2TranscodeTargets& src,
-    CesiumGltf::Ktx2TranscodeTargets& dst) {
+    CesiumImage::Ktx2TranscodeTargets& dst) {
     dst.ETC1S_R = toNative(src.ETC1S_R);
     dst.ETC1S_RG = toNative(src.ETC1S_RG);
     dst.ETC1S_RGB = toNative(src.ETC1S_RGB);

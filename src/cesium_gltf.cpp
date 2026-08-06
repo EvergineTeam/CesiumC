@@ -9,7 +9,7 @@
 
 #include <CesiumGltf/Model.h>
 #include <CesiumGltf/Accessor.h>
-#include <CesiumGltf/ImageAsset.h>
+#include <CesiumImage/ImageAsset.h>
 #include <CesiumGltfReader/GltfReader.h>
 #include <CesiumGltfWriter/GltfWriter.h>
 #include <CesiumGltfContent/GltfUtilities.h>
