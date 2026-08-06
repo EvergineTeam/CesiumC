@@ -35,9 +35,9 @@ extern "C" {
  * ========================================================================= */
 
 #define CESIUMC_CESIUM_NATIVE_VERSION_MAJOR 0
-#define CESIUMC_CESIUM_NATIVE_VERSION_MINOR 61
+#define CESIUMC_CESIUM_NATIVE_VERSION_MINOR 63
 #define CESIUMC_CESIUM_NATIVE_VERSION_PATCH 0
-#define CESIUMC_CESIUM_NATIVE_VERSION "0.61.0"
+#define CESIUMC_CESIUM_NATIVE_VERSION "0.63.0"
 
 /* ============================================================================
  * Error handling
@@ -159,7 +159,7 @@ typedef struct CesiumBoundingVolume {
 /**
  * @brief GPU compressed pixel format of an image, or NONE if uncompressed.
  *
- * Values mirror CesiumGltf::GpuCompressedPixelFormat one-to-one (same order).
+ * Values mirror CesiumImage::GpuCompressedPixelFormat one-to-one (same order).
  */
 typedef enum CesiumGpuCompressedPixelFormat {
     CESIUM_GPU_COMPRESSED_PIXEL_FORMAT_NONE = 0,
@@ -182,7 +182,7 @@ typedef enum CesiumGpuCompressedPixelFormat {
 /**
  * @brief The byte range of a single mip level within an image's pixel data.
  *
- * Layout-compatible with CesiumGltf::ImageAssetMipPosition.
+ * Layout-compatible with CesiumImage::ImageAssetMipPosition.
  */
 typedef struct CesiumImageMipPosition {
     size_t byteOffset; /**< Byte index where this mip begins. */
@@ -192,7 +192,7 @@ typedef struct CesiumImageMipPosition {
 /**
  * @brief Target GPU-compressed formats to transcode KTX2 textures into.
  *
- * Mirrors CesiumGltf::Ktx2TranscodeTargets. A field set to NONE means images of
+ * Mirrors CesiumImage::Ktx2TranscodeTargets. A field set to NONE means images of
  * that source type are fully decompressed to raw pixels instead of transcoded.
  */
 typedef struct CesiumKtx2TranscodeTargets {

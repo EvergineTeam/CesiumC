@@ -9,7 +9,11 @@
 #include <cesium/cesium_common.h>
 #include <cesium/cesium_geospatial.h>
 #include <cesium/cesium_gltf.h>
+#include <cesium/cesium_ion.h>
+#include <cesium/cesium_raster_overlays.h>
 #include <cesium/cesium_tileset.h>
+
+#include "test_gltf_asset.h"
 
 #include <cmath>
 #include <cstdio>
@@ -1073,6 +1077,647 @@ static int test_null_safety() {
 // Main
 // ============================================================================
 
+/* ============================================================================
+ * glTF, read from the document in test_gltf_asset.h
+ *
+ * Forty of the forty-nine functions in cesium_gltf.h need a model, and the only way to get
+ * one is to read a document. These share one through a helper rather than each parsing
+ * again: the parse is the slowest thing in this suite and repeating it ten times would make
+ * the offline run worse for no extra coverage.
+ *
+ * Every index passed below is in range on purpose. Eleven of the twenty-six index-taking
+ * getters in cesium_gltf.cpp index their vector with no bounds check at all -- for instance
+ * cesium_gltf_node_get_mesh does nodes[nodeIndex] directly -- so an out-of-range index is
+ * undefined behaviour rather than an error a test could assert on. That is worth fixing, and
+ * until it is fixed it is not worth testing.
+ * ========================================================================= */
+
+/* Reads the embedded document. The caller destroys the result and the reader. */
+static CesiumCGltfReaderResult* readTestGltf(CesiumCGltfReader** outReader) {
+    CesiumCGltfReader* reader = cesium_gltf_reader_create();
+    if (!reader) {
+        return nullptr;
+    }
+    *outReader = reader;
+    return cesium_gltf_reader_read(
+        reader,
+        reinterpret_cast<const uint8_t*>(kTestGltf),
+        std::strlen(kTestGltf));
+}
+
+static int test_gltf_reads_the_document() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+
+    /* If this fails, the document is malformed and every glTF test after it is meaningless.
+       Print why, rather than leaving nine unexplained failures behind it. */
+    if (!cesium_gltf_reader_result_has_model(result)) {
+        int errors = cesium_gltf_reader_result_get_error_count(result);
+        std::printf("\n    document rejected, %d error(s):\n", errors);
+        for (int i = 0; i < errors; ++i) {
+            std::printf("      %s\n", cesium_gltf_reader_result_get_error(result, i));
+        }
+        cesium_gltf_reader_result_destroy(result);
+        cesium_gltf_reader_destroy(reader);
+        return 1;
+    }
+
+    ASSERT_EQ(cesium_gltf_reader_result_get_error_count(result), 0);
+
+    /* Warnings are allowed -- the reader may have something to say about a data URI -- but
+       the count and the accessor have to agree with each other. */
+    int warnings = cesium_gltf_reader_result_get_warning_count(result);
+    ASSERT_TRUE(warnings >= 0);
+    for (int i = 0; i < warnings; ++i) {
+        ASSERT_NOT_NULL(cesium_gltf_reader_result_get_warning(result, i));
+    }
+
+    ASSERT_NOT_NULL(cesium_gltf_reader_result_get_model(result));
+
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+static int test_gltf_model_counts() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+    const CesiumGltfModel* model = cesium_gltf_reader_result_get_model(result);
+    ASSERT_NOT_NULL(model);
+
+    ASSERT_EQ(cesium_gltf_model_get_scene_count(model), kExpectedSceneCount);
+    ASSERT_EQ(cesium_gltf_model_get_node_count(model), kExpectedNodeCount);
+    ASSERT_EQ(cesium_gltf_model_get_mesh_count(model), kExpectedMeshCount);
+    ASSERT_EQ(cesium_gltf_model_get_material_count(model), kExpectedMaterialCount);
+    ASSERT_EQ(cesium_gltf_model_get_texture_count(model), kExpectedTextureCount);
+    ASSERT_EQ(cesium_gltf_model_get_image_count(model), kExpectedImageCount);
+    ASSERT_EQ(cesium_gltf_model_get_accessor_count(model), kExpectedAccessorCount);
+    ASSERT_EQ(cesium_gltf_model_get_buffer_count(model), kExpectedBufferCount);
+    ASSERT_EQ(cesium_gltf_model_get_buffer_view_count(model), kExpectedBufferViewCount);
+    ASSERT_EQ(cesium_gltf_model_get_animation_count(model), kExpectedAnimationCount);
+    ASSERT_EQ(cesium_gltf_model_get_skin_count(model), kExpectedSkinCount);
+
+    const char* meshName = cesium_gltf_model_get_mesh_name(model, 0);
+    ASSERT_NOT_NULL(meshName);
+    ASSERT_EQ(std::strcmp(meshName, "triangle"), 0);
+
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+static int test_gltf_scene_and_node_hierarchy() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+    const CesiumGltfModel* model = cesium_gltf_reader_result_get_model(result);
+    ASSERT_NOT_NULL(model);
+
+    int scene = cesium_gltf_model_get_default_scene(model);
+    ASSERT_EQ(scene, 0);
+    ASSERT_EQ(cesium_gltf_scene_get_node_count(model, scene), 1);
+
+    int root = cesium_gltf_scene_get_node(model, scene, 0);
+    ASSERT_EQ(root, 0);
+    ASSERT_EQ(cesium_gltf_node_get_mesh(model, root), 0);
+    ASSERT_EQ(cesium_gltf_node_get_children_count(model, root), 1);
+
+    /* The child carries no mesh. -1 is the documented "absent" answer, and checking it is
+       the only way to know the getter distinguishes absent from index zero. */
+    int child = cesium_gltf_node_get_child(model, root, 0);
+    ASSERT_EQ(child, 1);
+    ASSERT_EQ(cesium_gltf_node_get_mesh(model, child), -1);
+    ASSERT_EQ(cesium_gltf_node_get_children_count(model, child), 0);
+
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+static int test_gltf_node_transform() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+    const CesiumGltfModel* model = cesium_gltf_reader_result_get_model(result);
+    ASSERT_NOT_NULL(model);
+
+    double t[3] = {0.0, 0.0, 0.0};
+    cesium_gltf_node_get_translation(model, 0, t);
+    ASSERT_NEAR(t[0], 1.0, 1e-12);
+    ASSERT_NEAR(t[1], 2.0, 1e-12);
+    ASSERT_NEAR(t[2], 3.0, 1e-12);
+
+    double r[4] = {9.0, 9.0, 9.0, 9.0};
+    cesium_gltf_node_get_rotation(model, 0, r);
+    ASSERT_NEAR(r[0], 0.0, 1e-12);
+    ASSERT_NEAR(r[1], 0.0, 1e-12);
+    ASSERT_NEAR(r[2], 0.0, 1e-12);
+    ASSERT_NEAR(r[3], 1.0, 1e-12);
+
+    double s[3] = {0.0, 0.0, 0.0};
+    cesium_gltf_node_get_scale(model, 0, s);
+    ASSERT_NEAR(s[0], 2.0, 1e-12);
+    ASSERT_NEAR(s[1], 2.0, 1e-12);
+    ASSERT_NEAR(s[2], 2.0, 1e-12);
+
+    /* That node uses TRS rather than a matrix, and get_matrix reports it by returning 0 while
+       still filling the output with identity. A caller that ignored the return value and used
+       the matrix would silently drop the translation, so the contract is worth pinning. */
+    double m[16] = {0.0};
+    int hasMatrix = cesium_gltf_node_get_matrix(model, 0, m);
+    ASSERT_EQ(hasMatrix, 0);
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            ASSERT_NEAR(m[row * 4 + col], row == col ? 1.0 : 0.0, 1e-12);
+        }
+    }
+
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+static int test_gltf_primitive_and_attributes() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+    const CesiumGltfModel* model = cesium_gltf_reader_result_get_model(result);
+    ASSERT_NOT_NULL(model);
+
+    ASSERT_EQ(cesium_gltf_mesh_get_primitive_count(model, 0), 1);
+    ASSERT_EQ(cesium_gltf_primitive_get_mode(model, 0, 0), kModeTriangles);
+    ASSERT_EQ(cesium_gltf_primitive_get_material_index(model, 0, 0), 0);
+    ASSERT_EQ(
+        cesium_gltf_primitive_get_indices_accessor_index(model, 0, 0), kIndicesAccessor);
+    ASSERT_EQ(cesium_gltf_primitive_get_attribute_count(model, 0, 0), 1);
+
+    const char* attribute = cesium_gltf_primitive_get_attribute_name(model, 0, 0, 0);
+    ASSERT_NOT_NULL(attribute);
+    ASSERT_EQ(std::strcmp(attribute, "POSITION"), 0);
+    ASSERT_EQ(
+        cesium_gltf_primitive_get_attribute_accessor_index(model, 0, 0, 0),
+        kPositionAccessor);
+
+    /* Lookup by name has to agree with lookup by position, and has to answer -1 rather than
+       0 for an attribute that is not there. */
+    ASSERT_EQ(
+        cesium_gltf_primitive_find_attribute_accessor_index(model, 0, 0, "POSITION"),
+        kPositionAccessor);
+    ASSERT_EQ(
+        cesium_gltf_primitive_find_attribute_accessor_index(model, 0, 0, "NORMAL"), -1);
+
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+static int test_gltf_accessor_data() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+    const CesiumGltfModel* model = cesium_gltf_reader_result_get_model(result);
+    ASSERT_NOT_NULL(model);
+
+    /* Positions. The values are the ones written into the buffer in test_gltf_asset.h, so
+       this checks that the base64, the buffer view offset and the accessor stride all line
+       up -- not merely that some pointer came back. */
+    CesiumAccessorData positions;
+    std::memset(&positions, 0, sizeof(positions));
+    ASSERT_EQ(cesium_gltf_accessor_get_data(model, kPositionAccessor, &positions), 1);
+    ASSERT_NOT_NULL(positions.data);
+    ASSERT_EQ(positions.count, kVertexCount);
+    ASSERT_EQ(positions.componentType, kComponentTypeFloat);
+    ASSERT_EQ(positions.numberOfComponents, 3);
+    ASSERT_EQ(positions.stride, sizeof(float) * 3);
+
+    const unsigned char* bytes = static_cast<const unsigned char*>(positions.data);
+    const float expected[3][3] = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    for (int vertex = 0; vertex < kVertexCount; ++vertex) {
+        float xyz[3];
+        std::memcpy(xyz, bytes + static_cast<size_t>(vertex) * positions.stride, sizeof(xyz));
+        for (int component = 0; component < 3; ++component) {
+            ASSERT_NEAR(
+                static_cast<double>(xyz[component]),
+                static_cast<double>(expected[vertex][component]),
+                1e-6);
+        }
+    }
+
+    /* Indices, which live at a byte offset inside the same buffer. */
+    CesiumAccessorData indices;
+    std::memset(&indices, 0, sizeof(indices));
+    ASSERT_EQ(cesium_gltf_accessor_get_data(model, kIndicesAccessor, &indices), 1);
+    ASSERT_NOT_NULL(indices.data);
+    ASSERT_EQ(indices.count, 3);
+    ASSERT_EQ(indices.componentType, kComponentTypeUnsignedShort);
+    ASSERT_EQ(indices.numberOfComponents, 1);
+
+    const unsigned char* indexBytes = static_cast<const unsigned char*>(indices.data);
+    for (int i = 0; i < 3; ++i) {
+        uint16_t value = 0;
+        std::memcpy(&value, indexBytes + static_cast<size_t>(i) * indices.stride, sizeof(value));
+        ASSERT_EQ(static_cast<int>(value), i);
+    }
+
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+static int test_gltf_material_texture_sampler_image() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+    const CesiumGltfModel* model = cesium_gltf_reader_result_get_model(result);
+    ASSERT_NOT_NULL(model);
+
+    CesiumMaterialData material;
+    std::memset(&material, 0, sizeof(material));
+    ASSERT_EQ(cesium_gltf_material_get_data(model, 0, &material), 1);
+    ASSERT_TRUE(material.doubleSided != 0);
+    ASSERT_EQ(material.baseColorTexture.textureIndex, 0);
+
+    ASSERT_EQ(cesium_gltf_texture_get_source(model, 0), 0);
+    ASSERT_EQ(cesium_gltf_texture_get_sampler(model, 0), 0);
+
+    CesiumSamplerData sampler;
+    std::memset(&sampler, 0, sizeof(sampler));
+    ASSERT_EQ(cesium_gltf_sampler_get_data(model, 0, &sampler), 1);
+    ASSERT_EQ(sampler.magFilter, kMagFilterLinear);
+    ASSERT_EQ(sampler.minFilter, kMinFilterLinearMipmapLinear);
+    ASSERT_EQ(sampler.wrapS, kWrapClampToEdge);
+    ASSERT_EQ(sampler.wrapT, kWrapClampToEdge);
+
+    /* Whether the reader decoded the embedded PNG depends on how it was configured, and
+       cesium_gltf_image_get_data says so by returning 0. Assert the contract rather than an
+       outcome: either it declines, or it hands back a buffer whose size agrees with the
+       dimensions it reports. A buffer that disagreed would be read past the end by any
+       consumer that trusted those numbers. */
+    CesiumImageData image;
+    std::memset(&image, 0, sizeof(image));
+    int decoded = cesium_gltf_image_get_data(model, 0, &image);
+    ASSERT_TRUE(decoded == 0 || decoded == 1);
+    if (decoded == 1) {
+        ASSERT_NOT_NULL(image.pixelData);
+        ASSERT_EQ(image.width, 1);
+        ASSERT_EQ(image.height, 1);
+        ASSERT_TRUE(image.channels > 0);
+        ASSERT_TRUE(image.bytesPerChannel > 0);
+        ASSERT_EQ(
+            image.pixelDataSize,
+            static_cast<size_t>(image.width) * static_cast<size_t>(image.height) *
+                static_cast<size_t>(image.channels) *
+                static_cast<size_t>(image.bytesPerChannel));
+    }
+
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+static int test_gltf_glb_round_trip() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+    const CesiumGltfModel* model = cesium_gltf_reader_result_get_model(result);
+    ASSERT_NOT_NULL(model);
+
+    /* const_cast because get_model returns a const pointer while write_glb takes a mutable
+       one: the writer may normalise the model as it serialises. That asymmetry is in the
+       header rather than introduced here, and a C# caller meets the same one. */
+    CesiumGltfModel* mutableModel = const_cast<CesiumGltfModel*>(model);
+
+    uint8_t* glb = nullptr;
+    size_t glbSize = 0;
+    ASSERT_EQ(cesium_gltf_model_write_glb(mutableModel, &glb, &glbSize), 1);
+    ASSERT_NOT_NULL(glb);
+    ASSERT_TRUE(glbSize > 12);
+
+    /* The GLB header: magic 'glTF', then version 2. Checking these says the writer produced
+       a container rather than a blob of plausible length. */
+    ASSERT_EQ(std::memcmp(glb, "glTF", 4), 0);
+    uint32_t version = 0;
+    std::memcpy(&version, glb + 4, sizeof(version));
+    ASSERT_EQ(static_cast<int>(version), 2);
+
+    /* And it has to read back, which is what says the output is valid rather than merely
+       well-formed at the front. */
+    CesiumCGltfReader* reader2 = cesium_gltf_reader_create();
+    ASSERT_NOT_NULL(reader2);
+    CesiumCGltfReaderResult* result2 = cesium_gltf_reader_read(reader2, glb, glbSize);
+    ASSERT_NOT_NULL(result2);
+    ASSERT_TRUE(cesium_gltf_reader_result_has_model(result2) != 0);
+
+    const CesiumGltfModel* model2 = cesium_gltf_reader_result_get_model(result2);
+    ASSERT_NOT_NULL(model2);
+    ASSERT_EQ(cesium_gltf_model_get_mesh_count(model2), kExpectedMeshCount);
+    ASSERT_EQ(cesium_gltf_model_get_node_count(model2), kExpectedNodeCount);
+    ASSERT_EQ(cesium_gltf_model_get_accessor_count(model2), kExpectedAccessorCount);
+
+    cesium_gltf_reader_result_destroy(result2);
+    cesium_gltf_reader_destroy(reader2);
+    cesium_gltf_free_glb(glb);
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+static int test_gltf_strip_feature_ids() {
+    CesiumCGltfReader* reader = nullptr;
+    CesiumCGltfReaderResult* result = readTestGltf(&reader);
+    ASSERT_NOT_NULL(result);
+    const CesiumGltfModel* model = cesium_gltf_reader_result_get_model(result);
+    ASSERT_NOT_NULL(model);
+
+    /* This document has no feature IDs, so the call is a no-op -- but it has to be a no-op
+       that leaves the model usable, rather than one that clears something it should not.
+       Counts either side are the cheapest way to say that. */
+    int meshes = cesium_gltf_model_get_mesh_count(model);
+    int accessors = cesium_gltf_model_get_accessor_count(model);
+
+    cesium_gltf_model_strip_feature_ids(const_cast<CesiumGltfModel*>(model));
+
+    ASSERT_EQ(cesium_gltf_model_get_mesh_count(model), meshes);
+    ASSERT_EQ(cesium_gltf_model_get_accessor_count(model), accessors);
+    ASSERT_EQ(cesium_gltf_primitive_get_attribute_count(model, 0, 0), 1);
+
+    cesium_gltf_reader_result_destroy(result);
+    cesium_gltf_reader_destroy(reader);
+    return 0;
+}
+
+/* ============================================================================
+ * Raster overlays
+ *
+ * Creating an overlay does no network work: it records a URL and some options, and fetching
+ * begins when a tileset that owns it is updated. So all four constructors, the options
+ * round-trip and the collection are reachable offline.
+ * ========================================================================= */
+
+static int test_raster_overlay_options_default() {
+    CesiumRasterOverlayOptions options;
+    std::memset(&options, 0xAB, sizeof(options));
+    cesium_raster_overlay_options_default(&options);
+
+    /* The defaults the header documents. Worth checking because a consumer calls _default
+       and then changes one field, inheriting the rest -- so a wrong default is silent. */
+    ASSERT_EQ(options.maximumSimultaneousTileLoads, 20);
+    ASSERT_EQ(options.maximumTextureSize, 2048);
+    ASSERT_NEAR(options.maximumScreenSpaceError, 2.0, 1e-12);
+    ASSERT_EQ(options.showCreditsOnScreen, 0);
+    ASSERT_TRUE(options.subTileCacheBytes > 0);
+    return 0;
+}
+
+static int test_raster_overlay_constructors() {
+    CesiumRasterOverlay* url = cesium_url_template_raster_overlay_create(
+        "url-template", "https://example.invalid/{z}/{x}/{y}.png", 0, 18, 256, 256);
+    ASSERT_NOT_NULL(url);
+    cesium_raster_overlay_destroy(url);
+
+    CesiumRasterOverlay* tms =
+        cesium_tile_map_service_raster_overlay_create("tms", "https://example.invalid/tms/");
+    ASSERT_NOT_NULL(tms);
+    cesium_raster_overlay_destroy(tms);
+
+    CesiumRasterOverlay* wms = cesium_web_map_service_raster_overlay_create(
+        "wms", "https://example.invalid/wms", "layer-a,layer-b", 256, 256);
+    ASSERT_NOT_NULL(wms);
+    cesium_raster_overlay_destroy(wms);
+
+    /* An Ion overlay with a nonsense token still constructs: the token is only used once
+       something asks it to load. */
+    CesiumRasterOverlay* ion =
+        cesium_ion_raster_overlay_create(2, "not-a-real-token", nullptr);
+    ASSERT_NOT_NULL(ion);
+    cesium_raster_overlay_destroy(ion);
+    return 0;
+}
+
+static int test_raster_overlay_options_round_trip() {
+    CesiumRasterOverlay* overlay = cesium_url_template_raster_overlay_create(
+        "url-template", "https://example.invalid/{z}/{x}/{y}.png", 0, 18, 256, 256);
+    ASSERT_NOT_NULL(overlay);
+
+    CesiumRasterOverlayOptions options;
+    std::memset(&options, 0, sizeof(options));
+    ASSERT_EQ(cesium_raster_overlay_get_options(overlay, &options), 1);
+
+    options.maximumSimultaneousTileLoads = 7;
+    options.maximumTextureSize = 512;
+    options.maximumScreenSpaceError = 4.5;
+    options.showCreditsOnScreen = 1;
+    ASSERT_EQ(cesium_raster_overlay_set_options(overlay, &options), 1);
+
+    CesiumRasterOverlayOptions readBack;
+    std::memset(&readBack, 0, sizeof(readBack));
+    ASSERT_EQ(cesium_raster_overlay_get_options(overlay, &readBack), 1);
+    ASSERT_EQ(readBack.maximumSimultaneousTileLoads, 7);
+    ASSERT_EQ(readBack.maximumTextureSize, 512);
+    ASSERT_NEAR(readBack.maximumScreenSpaceError, 4.5, 1e-12);
+    ASSERT_EQ(readBack.showCreditsOnScreen, 1);
+
+    cesium_raster_overlay_destroy(overlay);
+    return 0;
+}
+
+static int test_raster_overlay_collection() {
+    CesiumAsyncSystem* async = cesium_async_system_create();
+    ASSERT_NOT_NULL(async);
+    CesiumAssetAccessor* accessor = cesium_asset_accessor_create("CesiumC-tests");
+    ASSERT_NOT_NULL(accessor);
+    CesiumCreditSystem* credits = cesium_credit_system_create();
+    ASSERT_NOT_NULL(credits);
+    CesiumTilesetExternals* externals =
+        cesium_tileset_externals_create(async, accessor, credits);
+    ASSERT_NOT_NULL(externals);
+
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    ASSERT_NOT_NULL(options);
+    CesiumTileset* tileset = cesium_tileset_create_from_url(
+        externals, "https://example.invalid/tileset.json", options);
+    ASSERT_NOT_NULL(tileset);
+
+    CesiumRasterOverlayCollection* collection = cesium_tileset_get_overlays(tileset);
+    ASSERT_NOT_NULL(collection);
+
+    CesiumRasterOverlay* overlay = cesium_url_template_raster_overlay_create(
+        "url-template", "https://example.invalid/{z}/{x}/{y}.png", 0, 18, 256, 256);
+    ASSERT_NOT_NULL(overlay);
+
+    /* Add then remove. The collection takes a reference, so removing has to leave the
+       tileset holding nothing dangling -- which is why the tileset is destroyed after this
+       rather than before. */
+    cesium_raster_overlay_collection_add(collection, overlay);
+    cesium_raster_overlay_collection_remove(collection, overlay);
+
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    cesium_tileset_externals_destroy(externals);
+    cesium_credit_system_destroy(credits);
+    cesium_asset_accessor_destroy(accessor);
+    cesium_async_system_destroy(async);
+    return 0;
+}
+
+/* ============================================================================
+ * Ion, offline
+ *
+ * Everything that talks to Ion needs a token, and those tests exist already and are skipped
+ * without one. What is reachable offline is the object lifecycle -- which is where a wrapper
+ * bug would live anyway, as opposed to a service bug.
+ * ========================================================================= */
+
+static int test_ion_connection_argument_guards() {
+    CesiumAsyncSystem* async = cesium_async_system_create();
+    ASSERT_NOT_NULL(async);
+    CesiumAssetAccessor* accessor = cesium_asset_accessor_create("CesiumC-tests");
+    ASSERT_NOT_NULL(accessor);
+
+    /* Only the argument guards, and deliberately so.
+     *
+     * cesium_ion_connection_create is not a constructor despite reading like one: it fetches
+     * ApplicationData from the API URL and pumps the main thread in a 5000 x 10ms loop
+     * waiting for it. So a successful call needs the network and an unreachable host costs
+     * fifty seconds before returning NULL. An earlier version of this test called it with a
+     * NULL apiUrl and passed -- by reaching api.cesium.com from CI, which is not a test being
+     * offline, it is a test whose result depends on somebody else's uptime.
+     *
+     * The guards below return before any of that, so they are the part that can be checked
+     * here. Constructing a real connection lives with the other token-dependent tests.
+     */
+    ASSERT_NULL(cesium_ion_connection_create(nullptr, accessor, "token", nullptr));
+    ASSERT_NULL(cesium_ion_connection_create(async, nullptr, "token", nullptr));
+    ASSERT_NULL(cesium_ion_connection_create(async, accessor, nullptr, nullptr));
+
+    cesium_asset_accessor_destroy(accessor);
+    cesium_async_system_destroy(async);
+    return 0;
+}
+
+/* ============================================================================
+ * The remaining gaps in geospatial and tileset
+ * ========================================================================= */
+
+static int test_ellipsoid_unit_sphere() {
+    const CesiumEllipsoid* unit = cesium_ellipsoid_unit_sphere();
+    ASSERT_NOT_NULL(unit);
+    ASSERT_NEAR(cesium_ellipsoid_get_maximum_radius(unit), 1.0, 1e-12);
+    ASSERT_NEAR(cesium_ellipsoid_get_minimum_radius(unit), 1.0, 1e-12);
+
+    /* On a unit sphere the surface normal at a point is the normalised point, which makes
+       this the one ellipsoid whose expected answer can be written down by hand. */
+    CesiumVec3 onX = {3.0, 0.0, 0.0};
+    CesiumVec3 normal = cesium_ellipsoid_geodetic_surface_normal_cartesian(unit, onX);
+    ASSERT_NEAR(normal.x, 1.0, 1e-12);
+    ASSERT_NEAR(normal.y, 0.0, 1e-12);
+    ASSERT_NEAR(normal.z, 0.0, 1e-12);
+
+    CesiumVec3 belowZ = {0.0, 0.0, -5.0};
+    normal = cesium_ellipsoid_geodetic_surface_normal_cartesian(unit, belowZ);
+    ASSERT_NEAR(normal.x, 0.0, 1e-12);
+    ASSERT_NEAR(normal.y, 0.0, 1e-12);
+    ASSERT_NEAR(normal.z, -1.0, 1e-12);
+
+    /* Not destroyed: unit_sphere returns a const singleton, the same shape as
+       cesium_ellipsoid_wgs84, and the existing tests do not destroy that one either. */
+    return 0;
+}
+
+static int test_tileset_from_url_render_content() {
+    CesiumAsyncSystem* async = cesium_async_system_create();
+    ASSERT_NOT_NULL(async);
+    CesiumAssetAccessor* accessor = cesium_asset_accessor_create("CesiumC-tests");
+    ASSERT_NOT_NULL(accessor);
+    CesiumCreditSystem* credits = cesium_credit_system_create();
+    ASSERT_NOT_NULL(credits);
+    CesiumTilesetExternals* externals =
+        cesium_tileset_externals_create(async, accessor, credits);
+    ASSERT_NOT_NULL(externals);
+
+    /* Construction records the URL; nothing is fetched until the tileset is updated, so an
+       unreachable host is fine and keeps this offline. */
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    ASSERT_NOT_NULL(options);
+    CesiumTileset* tileset = cesium_tileset_create_from_url(
+        externals, "https://example.invalid/tileset.json", options);
+    ASSERT_NOT_NULL(tileset);
+
+    /* Without a successful load there is no root tile. If one exists anyway, its content
+       accessors have to agree with each other: claiming no render content and then handing
+       back a model is the inconsistency that would strand a consumer. */
+    const CesiumTile* root = cesium_tileset_get_root_tile(tileset);
+    if (root != nullptr) {
+        int hasContent = cesium_tile_has_render_content(root);
+        ASSERT_TRUE(hasContent == 0 || hasContent == 1);
+        if (hasContent == 0) {
+            ASSERT_NULL(cesium_tile_get_render_content_model(root));
+            ASSERT_NULL(cesium_tile_get_render_resources(root));
+        }
+    }
+
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    cesium_tileset_externals_destroy(externals);
+    cesium_credit_system_destroy(credits);
+    cesium_asset_accessor_destroy(accessor);
+    cesium_async_system_destroy(async);
+    return 0;
+}
+
+static int g_rootTileAvailableCalls = 0;
+
+static void onRootTileAvailable(void* userData) {
+    ++g_rootTileAvailableCalls;
+    if (userData != nullptr) {
+        *static_cast<int*>(userData) += 1;
+    }
+}
+
+static int test_tileset_callback_registration() {
+    CesiumAsyncSystem* async = cesium_async_system_create();
+    ASSERT_NOT_NULL(async);
+    CesiumAssetAccessor* accessor = cesium_asset_accessor_create("CesiumC-tests");
+    ASSERT_NOT_NULL(accessor);
+    CesiumCreditSystem* credits = cesium_credit_system_create();
+    ASSERT_NOT_NULL(credits);
+    CesiumTilesetExternals* externals =
+        cesium_tileset_externals_create(async, accessor, credits);
+    ASSERT_NOT_NULL(externals);
+
+    /* Registering the renderer callbacks is pure bookkeeping -- nothing invokes them until a
+       tile loads -- so both a real struct and NULL are reachable offline. NULL is the
+       documented way back to the no-op default, and a wrapper that mishandled it would leave
+       the previous function pointers live against a caller who thought they were gone. */
+    CesiumRendererResourceCallbacks callbacks;
+    std::memset(&callbacks, 0, sizeof(callbacks));
+    cesium_tileset_externals_set_renderer_resource_callbacks(externals, &callbacks);
+    cesium_tileset_externals_set_renderer_resource_callbacks(externals, nullptr);
+
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    ASSERT_NOT_NULL(options);
+    CesiumTileset* tileset = cesium_tileset_create_from_url(
+        externals, "https://example.invalid/tileset.json", options);
+    ASSERT_NOT_NULL(tileset);
+
+    /* The host is unreachable, so this callback will not fire -- which is the point. It is
+       registered, the tileset is destroyed, and nothing calls into a dead frame afterwards. */
+    int calls = 0;
+    g_rootTileAvailableCalls = 0;
+    cesium_tileset_set_root_tile_available_callback(tileset, onRootTileAvailable, &calls);
+    cesium_tileset_set_root_tile_available_callback(tileset, nullptr, nullptr);
+
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    cesium_tileset_externals_destroy(externals);
+    cesium_credit_system_destroy(credits);
+    cesium_asset_accessor_destroy(accessor);
+    cesium_async_system_destroy(async);
+    return 0;
+}
+
 int main() {
     // Read Cesium Ion access token from environment
     g_ionToken = std::getenv("CESIUM_ION_TOKEN");
@@ -1108,6 +1753,31 @@ int main() {
     RUN_TEST(test_view_state_from_matrices);
     RUN_TEST(test_load_error_callback);
     RUN_TEST(test_scale_to_surface);
+
+    // --- glTF, from the document embedded in test_gltf_asset.h ---
+    RUN_TEST(test_gltf_reads_the_document);
+    RUN_TEST(test_gltf_model_counts);
+    RUN_TEST(test_gltf_scene_and_node_hierarchy);
+    RUN_TEST(test_gltf_node_transform);
+    RUN_TEST(test_gltf_primitive_and_attributes);
+    RUN_TEST(test_gltf_accessor_data);
+    RUN_TEST(test_gltf_material_texture_sampler_image);
+    RUN_TEST(test_gltf_glb_round_trip);
+    RUN_TEST(test_gltf_strip_feature_ids);
+
+    // --- Raster overlays, all offline: constructing one fetches nothing ---
+    RUN_TEST(test_raster_overlay_options_default);
+    RUN_TEST(test_raster_overlay_constructors);
+    RUN_TEST(test_raster_overlay_options_round_trip);
+    RUN_TEST(test_raster_overlay_collection);
+
+    // --- Ion object lifecycle, which needs no token ---
+    RUN_TEST(test_ion_connection_argument_guards);
+
+    // --- The remaining geospatial and tileset gaps ---
+    RUN_TEST(test_ellipsoid_unit_sphere);
+    RUN_TEST(test_tileset_from_url_render_content);
+    RUN_TEST(test_tileset_callback_registration);
 
     // --- Online / integration tests (require CESIUM_ION_TOKEN) ---
     RUN_TEST(test_tileset_create_from_ion_world_terrain);

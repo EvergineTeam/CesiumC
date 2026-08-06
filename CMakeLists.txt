@@ -94,6 +94,9 @@ target_link_libraries(CesiumNativeC
         CesiumGeospatial
         CesiumGeometry
         CesiumGltf
+        # New in cesium-native 0.63.0. ImageAsset and Ktx2TranscodeTargets moved here
+        # out of CesiumGltf, so this is not an optional addition.
+        CesiumImage
         CesiumGltfReader
         CesiumGltfWriter
         CesiumGltfContent

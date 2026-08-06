@@ -67,6 +67,16 @@ typedef void (*CesiumIonAuthorizeCompleteCallback)(void* userData, CesiumIonConn
  * @param accessor The asset accessor for HTTP requests.
  * @param accessToken The Cesium Ion access token.
  * @param apiUrl The Ion API URL, or NULL for "https://api.cesium.com/".
+ *
+ * @warning This blocks. It fetches the server's ApplicationData before it can build the
+ * connection, and waits for that by pumping the main thread in a 5000 x 10ms loop -- so an
+ * unreachable or slow host costs up to fifty seconds on the calling thread, and the function
+ * then returns NULL. Do not call it on a frame thread.
+ *
+ * On a single-threaded build (Emscripten without -pthread, which is how .NET's browser-wasm
+ * links native code) it is worse than slow: the loop sleeps the only thread there is, so
+ * nothing else -- including the fetch it is waiting for -- can make progress. It is
+ * effectively unusable there until it grows an asynchronous form.
  */
 CESIUM_API CesiumIonConnection* cesium_ion_connection_create(
     CesiumAsyncSystem* asyncSystem,
