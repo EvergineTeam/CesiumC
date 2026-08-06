@@ -205,11 +205,11 @@ CESIUM_API CesiumRasterOverlay* cesium_web_map_service_raster_overlay_create(
 namespace {
 
 // Convert between the C and C++ GPU compressed pixel format enums (1:1 order).
-CesiumGpuCompressedPixelFormat toC(CesiumGltf::GpuCompressedPixelFormat f) {
+CesiumGpuCompressedPixelFormat toC(CesiumImage::GpuCompressedPixelFormat f) {
     return static_cast<CesiumGpuCompressedPixelFormat>(f);
 }
-CesiumGltf::GpuCompressedPixelFormat toNative(CesiumGpuCompressedPixelFormat f) {
-    return static_cast<CesiumGltf::GpuCompressedPixelFormat>(f);
+CesiumImage::GpuCompressedPixelFormat toNative(CesiumGpuCompressedPixelFormat f) {
+    return static_cast<CesiumImage::GpuCompressedPixelFormat>(f);
 }
 
 void copyKtx2TargetsToC(

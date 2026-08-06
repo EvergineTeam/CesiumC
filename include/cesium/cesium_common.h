@@ -159,7 +159,7 @@ typedef struct CesiumBoundingVolume {
 /**
  * @brief GPU compressed pixel format of an image, or NONE if uncompressed.
  *
- * Values mirror CesiumGltf::GpuCompressedPixelFormat one-to-one (same order).
+ * Values mirror CesiumImage::GpuCompressedPixelFormat one-to-one (same order).
  */
 typedef enum CesiumGpuCompressedPixelFormat {
     CESIUM_GPU_COMPRESSED_PIXEL_FORMAT_NONE = 0,

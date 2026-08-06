@@ -90,12 +90,12 @@ void* CCallbackRendererResources::prepareRasterInLoadThread(
                 sizeof(CesiumImage::ImageAssetMipPosition),
             "CesiumImageMipPosition must match ImageAssetMipPosition layout");
         static_assert(
-            static_cast<int>(CesiumGltf::GpuCompressedPixelFormat::NONE) ==
+            static_cast<int>(CesiumImage::GpuCompressedPixelFormat::NONE) ==
                 CESIUM_GPU_COMPRESSED_PIXEL_FORMAT_NONE,
             "GpuCompressedPixelFormat enum mapping drifted");
         static_assert(
             static_cast<int>(
-                CesiumGltf::GpuCompressedPixelFormat::ETC2_EAC_RG11) ==
+                CesiumImage::GpuCompressedPixelFormat::ETC2_EAC_RG11) ==
                 CESIUM_GPU_COMPRESSED_PIXEL_FORMAT_ETC2_EAC_RG11,
             "GpuCompressedPixelFormat enum mapping drifted");
 
