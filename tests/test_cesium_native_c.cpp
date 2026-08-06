@@ -1755,7 +1755,20 @@ struct FakeHost {
 
     CesiumAssetRequestId queued[FAKE_HOST_MAX_QUEUED];
     int queuedCount;
+
+    /* Filled by the tileset's load-error callback. Without this a failed pump reports only
+       "root never appeared", which is the least useful thing it could say. */
+    int loadErrorCount;
+    char lastLoadError[256];
 };
+
+static void fakeHostLoadError(void* userData, const char* message) {
+    FakeHost* host = static_cast<FakeHost*>(userData);
+    ++host->loadErrorCount;
+    if (message) {
+        std::snprintf(host->lastLoadError, sizeof(host->lastLoadError), "%s", message);
+    }
+}
 
 static void fakeHostAnswer(FakeHost* host, CesiumAssetRequestId id) {
     const CesiumHttpHeader headers[] = {
@@ -1878,6 +1891,11 @@ static bool pumpUntilRootTile(
             return true;
         }
     }
+    std::printf(
+        "
+    no root tile after %d pumps: beginCalls=%d loadErrors=%d last=\"%s\"
+",
+        maxIterations, host->beginCalls, host->loadErrorCount, host->lastLoadError);
     return false;
 }
 
@@ -1931,6 +1949,7 @@ static int test_host_accessor_callbacks_are_optional() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     ASSERT_NOT_NULL(tileset);
@@ -1952,16 +1971,25 @@ static int test_host_accessor_no_begin_callback_fails_requests() {
     CesiumAssetAccessorCallbacks cb;
     std::memset(&cb, 0, sizeof(cb));
 
+    FakeHost host;
+    fakeHostInit(&host, nullptr);
+
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     ASSERT_NOT_NULL(tileset);
     CesiumViewState* vs = makeTestViewState();
 
-    FakeHost unused;
-    fakeHostInit(&unused, nullptr);
-    ASSERT_TRUE(!pumpUntilRootTile(f, &unused, tileset, vs, 20));
+    /* Expected to fail, so the pump's diagnostic would be noise. */
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 20; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    }
+    ASSERT_TRUE(!cesium_tileset_is_root_tile_available(tileset));
 
     cesium_view_state_destroy(vs);
     cesium_tileset_destroy(tileset);
@@ -1978,6 +2006,7 @@ static int test_host_accessor_receives_request() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     ASSERT_NOT_NULL(tileset);
@@ -2013,6 +2042,7 @@ static int test_host_accessor_response_reaches_tileset() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     ASSERT_NOT_NULL(tileset);
@@ -2043,6 +2073,7 @@ static int test_host_accessor_body_is_copied() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     ASSERT_NOT_NULL(tileset);
@@ -2079,6 +2110,7 @@ static int test_host_accessor_resolves_relative_url() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     ASSERT_NOT_NULL(tileset);
@@ -2115,6 +2147,7 @@ static int test_host_accessor_double_complete_is_ignored() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     CesiumViewState* vs = makeTestViewState();
@@ -2165,6 +2198,7 @@ static int test_host_accessor_fail_request() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     CesiumViewState* vs = makeTestViewState();
@@ -2219,8 +2253,22 @@ static int test_host_accessor_never_answered_is_released() {
 
         cesium_view_state_destroy(vs);
         cesium_tileset_destroy(tileset);
+
+        /* Pump before tearing the rest down. cesium-native's Tileset destroys itself
+           asynchronously and holds TilesetExternals -- and through it the accessor -- until
+           that completes, so without this the accessor outlives the scope and neither
+           cancelRequest nor destroy has fired yet. A host pumps every frame anyway; the
+           first version of this test simply assumed teardown was synchronous. */
+        for (int i = 0; i < 50; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+        }
+
         cesium_tileset_options_destroy(options);
         f.destroy();
+
+        for (int i = 0; i < 50; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+        }
     }
 
     /* Teardown cancels what the host never answered, then tells it the accessor is gone. */
@@ -2257,6 +2305,9 @@ static int test_host_accessor_completed_after_everything_destroyed() {
 
         cesium_view_state_destroy(vs);
         cesium_tileset_destroy(tileset);
+        for (int i = 0; i < 50; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+        }
         cesium_tileset_options_destroy(options);
         f.destroy();   /* the async system goes too */
     }
@@ -2281,6 +2332,7 @@ static int test_host_accessor_synchronous_completion() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     CesiumViewState* vs = makeTestViewState();
@@ -2303,6 +2355,7 @@ static int test_host_accessor_cancel_all_requests() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     CesiumViewState* vs = makeTestViewState();
@@ -2335,6 +2388,7 @@ static int test_host_accessor_worker_thread_opt_in() {
 
     TilesetTestFixture f = createHostFixture(&cb);
     CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
     CesiumTileset* tileset =
         cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
     CesiumViewState* vs = makeTestViewState();
