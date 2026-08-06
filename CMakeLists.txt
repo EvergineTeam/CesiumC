@@ -69,6 +69,7 @@ add_library(CesiumNativeC ${CESIUM_NATIVE_C_LIBRARY_TYPE}
     src/cesium_gltf.cpp
     src/cesium_async.cpp
     src/cesium_asset_accessor.cpp
+    src/cesium_host_accessor.cpp
     src/cesium_credit_system.cpp
     src/cesium_renderer_resources.cpp
     src/cesium_tileset_options.cpp

@@ -93,6 +93,19 @@ typedef struct CesiumCartographic {
 } CesiumCartographic;
 
 /**
+ * @brief One HTTP header, as a pair of NUL-terminated UTF-8 strings.
+ *
+ * @warning Both pointers are **borrowed**, in either direction, and valid only for the
+ * duration of the call that carries them. That is the rule for everything crossing this API:
+ * URLs, methods, header arrays, request and response bodies. Anything the receiver needs
+ * afterwards it copies before returning.
+ */
+typedef struct CesiumHttpHeader {
+    const char* name;
+    const char* value;
+} CesiumHttpHeader;
+
+/**
  * @brief A globe rectangle defined by west, south, east, north in radians.
  */
 typedef struct CesiumGlobeRectangle {

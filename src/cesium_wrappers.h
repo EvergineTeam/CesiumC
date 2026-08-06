@@ -22,8 +22,37 @@
 #include <cesium/cesium_tileset.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
+
+// Threads are available everywhere except Emscripten built without -pthread, which is how
+// .NET's browser-wasm links native code. Emscripten defines __EMSCRIPTEN_PTHREADS__ only when
+// -pthread is passed, so the compiler answers this question rather than the build system --
+// and a wasm build that *does* enable threads keeps the threaded behaviour without anyone
+// having to remember to flip a flag.
+//
+// Defined here rather than in cesium_async.cpp, where it started, because two translation
+// units now need the same answer and two copies of a predicate is how they drift apart.
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+#define CESIUMC_NO_THREADS 1
+#endif
+
+#ifdef CESIUMC_NO_THREADS
+// A lock that locks nothing, for the build where there is one thread. It exists so the code
+// that needs a lock elsewhere reads the same on both, rather than growing an #if around every
+// critical section -- and so nothing drags pthread_create into an archive the wasm CI job
+// greps for exactly that symbol.
+class CNullMutex {
+public:
+    void lock() noexcept {}
+    void unlock() noexcept {}
+    bool try_lock() noexcept { return true; }
+};
+using CMutex = CNullMutex;
+#else
+using CMutex = std::mutex;
+#endif
 
 // A task processor that may need draining from the main thread.
 //
