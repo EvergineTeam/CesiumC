@@ -1868,12 +1868,19 @@ static void fakeHostPump(FakeHost* host) {
 }
 
 /**
- * @brief Drives a tileset to its root tile with no sleeping anywhere.
+ * @brief Drives a tileset to its root tile.
  *
- * There is nothing to wait for: the fake host answers synchronously when pumped. On wasm
- * sleeping would be worse than pointless -- it is single-threaded, so nothing can progress
- * while the one thread is asleep. Progress comes from pumping, which is exactly the shape a
- * browser host has.
+ * Sleeps between iterations on any platform that has threads, and this is the whole subtlety.
+ * The fake host does answer synchronously when pumped, so there is nothing to wait for in the
+ * HTTP half -- but cesium-native parses the tileset JSON in runInWorkerThread, which on a
+ * threaded build is a real worker. A pump with no sleep runs its two hundred iterations in a
+ * couple of milliseconds and gives up long before that worker has finished, which is exactly
+ * how the first version of this failed on all five desktop legs while claiming there was
+ * "nothing to wait for".
+ *
+ * On single-threaded wasm the opposite holds and sleeping would be actively wrong: the
+ * deferred queue is drained by the pump itself, so the one thread must keep running for
+ * anything to happen at all.
  */
 static bool pumpUntilRootTile(
     TilesetTestFixture& f,
@@ -1890,6 +1897,9 @@ static bool pumpUntilRootTile(
         if (cesium_tileset_is_root_tile_available(tileset)) {
             return true;
         }
+#if !(defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__))
+        sleep_ms(5);
+#endif
     }
     std::printf(
         "
@@ -2125,6 +2135,9 @@ static int test_host_accessor_resolves_relative_url() {
         cesium_async_system_dispatch_main_thread_tasks(f.async);
         cesium_credit_system_start_next_frame(f.credits);
         cesium_tileset_update_view(tileset, views, 1, 0.016f);
+#if !(defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__))
+        sleep_ms(5);   /* the root must be parsed on a worker before its content is requested */
+#endif
     }
 
     ASSERT_EQ(std::strcmp(host.firstUrl, kTestTilesetUrl), 0);
