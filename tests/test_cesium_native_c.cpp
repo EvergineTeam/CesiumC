@@ -1902,9 +1902,7 @@ static bool pumpUntilRootTile(
 #endif
     }
     std::printf(
-        "
-    no root tile after %d pumps: beginCalls=%d loadErrors=%d last=\"%s\"
-",
+        "\n    no root tile after %d pumps: beginCalls=%d loadErrors=%d last=\"%s\"\n",
         maxIterations, host->beginCalls, host->loadErrorCount, host->lastLoadError);
     return false;
 }
