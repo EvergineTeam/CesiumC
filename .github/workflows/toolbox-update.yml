@@ -1,0 +1,18 @@
+# Keeps the installed agentic workflows pinned to the current toolbox release. Moving the
+# `v1` tag updates nothing on its own -- a repository keeps the commit its workflows were
+# compiled against until something recompiles them, and this is that something.
+
+name: Toolbox update
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  update:
+    uses: EvergineTeam/Evergine.Bindings/.github/workflows/toolbox-updater.yml@v1
+    with:
+      app-client-id: ${{ vars.APP_CLIENT_ID }}
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

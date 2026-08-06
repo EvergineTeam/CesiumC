@@ -1,0 +1,30 @@
+# Completes a cpp-wrapper-porter pull request by moving the cesium-native pointer to the
+# release the agent recorded in binding.yml.
+#
+# The agent cannot do it itself. gh-aw builds its commits through the GitHub API, which has no
+# way to write a gitlink, and it refuses the unsigned push fallback whenever a submodule has
+# moved -- so a patch containing one turns the whole pull request into an issue rather than
+# merging with a warning. That happened on cpp-wrapper-porter's first real run, in
+# JoltPhysicsC, which is why this exists.
+#
+# Note that a bump here is three edits and this performs only the first. The vcpkg baseline and
+# the explicit library list in target_link_libraries are ordinary file changes the agent
+# includes in its own patch; see .github/wrapper-profile.md.
+
+name: Wrapper submodule bump
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+
+jobs:
+  bump:
+    # Only the agent's own pull requests. A human moving the pointer by hand needs none of
+    # this, and running it on every pull request would push commits into unrelated branches.
+    if: contains(github.event.pull_request.labels.*.name, 'agent:wrapper-port')
+    uses: EvergineTeam/Evergine.Bindings/.github/workflows/wrapper-submodule-bump.yml@v1
+    with:
+      submodule-path: cesium-native
+      app-client-id: ${{ vars.APP_CLIENT_ID }}
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
