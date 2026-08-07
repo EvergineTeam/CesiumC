@@ -358,6 +358,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$emscriptenToolchain" `
             -DVCPKG_TARGET_TRIPLET=wasm32-emscripten `
+            -DVCPKG_OVERLAY_TRIPLETS="$PWD/triplets" `
             -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
             -DCMAKE_CROSSCOMPILING_EMULATOR="$env:EMSDK_NODE" `
             -DCESIUM_WASM_SHARED_MEMORY=OFF `
