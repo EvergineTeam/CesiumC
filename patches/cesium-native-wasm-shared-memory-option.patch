@@ -1,32 +1,36 @@
 diff --git a/cmake/compiler.cmake b/cmake/compiler.cmake
-index baa5a9041..a1d943ad1 100644
+index baa5a9041..aa00c6921 100644
 --- a/cmake/compiler.cmake
 +++ b/cmake/compiler.cmake
-@@ -4,11 +4,27 @@
+@@ -4,11 +4,31 @@
  #     add_compile_options(-Werror -Wall -Wextra -Wconversion -Wpedantic -Wshadow -Wsign-conversion)
  # endif()
  
-+# -pthread and -fwasm-exceptions are all-or-nothing across a link: the first changes the memory
-+# model to shared, the second picks an exception scheme, and every object in the final binary has
-+# to agree. That makes them a property of the embedding application rather than of the wasm target,
-+# and an engine whose runtime uses neither cannot link a cesium-native built with them.
++# -pthread is all-or-nothing across a link: it changes the memory model to shared, and every
++# object in the final binary has to agree. That makes it a property of the embedding application
++# rather than of the wasm target, and a runtime that is single-threaded cannot link a
++# cesium-native built with it. .NET's browser-wasm is one such runtime.
 +#
-+# Defaults to ON, so this changes nothing for an existing build. Turn it off to produce a
-+# single-threaded, JS-exception build.
-+option(CESIUM_WASM_SHARED_MEMORY "Build wasm with shared memory (-pthread) and native wasm exceptions" ON)
++# Only threads are optional here. -fwasm-exceptions and -sSUPPORT_LONGJMP=wasm stay on
++# unconditionally: they are equally all-or-nothing, but the answer is not in doubt. .NET links
++# with -mllvm -exception-model=wasm and -lc++-except, so an archive built any other way is the
++# one it cannot use -- verified by linking a throwing archive into a .NET wasm application and
++# running it. The two settings also go together, since emscripten rejects the JS longjmp model
++# alongside wasm exceptions.
++#
++# Defaults to ON, so this changes nothing for an existing build.
++option(CESIUM_WASM_SHARED_MEMORY "Build wasm with shared memory (-pthread)" ON)
 +
  if(CESIUM_TARGET_WASM)
 -  add_compile_options(-pthread -msimd128 -mnontrapping-fptoint -mbulk-memory -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
 -  add_link_options(-pthread -sALLOW_MEMORY_GROWTH=1 -sPTHREAD_POOL_SIZE=4 -sMAXIMUM_MEMORY=4294967296 -sMIN_NODE_VERSION=200000 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=1048576 -fwasm-exceptions -mbulk-memory -mnontrapping-fptoint -msse4.2 -sWASM_BIGINT -sSUPPORT_LONGJMP=wasm -sFORCE_FILESYSTEM -sPROXY_TO_PTHREAD)
-+  # Wasm feature flags rather than ABI choices: they widen the instruction set the compiler may
-+  # emit and cost a consumer nothing, so they apply either way.
-+  add_compile_options(-msimd128 -mnontrapping-fptoint -mbulk-memory)
-+  add_link_options(-sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sMIN_NODE_VERSION=200000 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=1048576 -mbulk-memory -mnontrapping-fptoint -sWASM_BIGINT -sFORCE_FILESYSTEM)
++  add_compile_options(-msimd128 -mnontrapping-fptoint -mbulk-memory -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
++  add_link_options(-sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sMIN_NODE_VERSION=200000 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=1048576 -fwasm-exceptions -mbulk-memory -mnontrapping-fptoint -msse4.2 -sWASM_BIGINT -sSUPPORT_LONGJMP=wasm -sFORCE_FILESYSTEM)
    add_link_options($<$<CONFIG:Debug>:-gsource-map>)
  
 +  if(CESIUM_WASM_SHARED_MEMORY)
-+    add_compile_options(-pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
-+    add_link_options(-pthread -sPTHREAD_POOL_SIZE=4 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sPROXY_TO_PTHREAD)
++    add_compile_options(-pthread)
++    add_link_options(-pthread -sPTHREAD_POOL_SIZE=4 -sPROXY_TO_PTHREAD)
 +  endif()
 +
    if (CESIUM_WASM64)

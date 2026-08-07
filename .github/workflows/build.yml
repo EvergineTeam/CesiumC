@@ -361,8 +361,8 @@ jobs:
             -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
             -DCMAKE_CROSSCOMPILING_EMULATOR="$env:EMSDK_NODE" `
             -DCESIUM_WASM_SHARED_MEMORY=OFF `
-            -DCMAKE_CXX_FLAGS="-DSIZEOF_SIZE_T=4 -sSUPPORT_LONGJMP=wasm" `
-            -DCMAKE_C_FLAGS="-DSIZEOF_SIZE_T=4 -sSUPPORT_LONGJMP=wasm" `
+            -DCMAKE_CXX_FLAGS="-DSIZEOF_SIZE_T=4 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm" `
+            -DCMAKE_C_FLAGS="-DSIZEOF_SIZE_T=4 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm" `
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
 
       - name: CMake build
@@ -378,7 +378,14 @@ jobs:
       # the merged archive below, where most of the hundred and thirty-nine libraries contribute
       # no member at all. So this check stays here, on our own code, and the merged archive is
       # policed by an actual link instead.
-      - name: Verify our own objects are single-threaded and free of wasm exceptions
+      #
+      # The exception symbols used to be checked here and no longer are, because the reasoning
+      # behind that was wrong. It assumed .NET could not link an archive built with wasm
+      # exceptions; measured instead of assumed, .NET requires them -- its own link passes
+      # -mllvm -exception-model=wasm and -lc++-except, and a throwing archive built with
+      # -fwasm-exceptions links into a .NET wasm application and runs. The check was rejecting
+      # the only archive that works.
+      - name: Verify our own objects are single-threaded
         shell: bash
         run: |
           set -euo pipefail
@@ -386,7 +393,7 @@ jobs:
           test -f "$archive" || { echo "::error::$archive was not produced"; exit 1; }
           echo "archive: $archive ($(stat -c%s "$archive") bytes)"
           failed=0
-          for sym in __cpp_exception __wasm_lpad_context _Unwind_CallPersonality pthread_create; do
+          for sym in pthread_create; do
             count=$(grep -ac "$sym" "$archive" || true)
             printf '  %-26s %s\n' "$sym" "$count"
             if [ "$count" != "0" ]; then
@@ -473,7 +480,7 @@ jobs:
           # archive built with the JS-based setjmp model cannot be linked by .NET, which passes
           # -mllvm -wasm-enable-sjlj and so expects __wasm_longjmp. That is precisely how the
           # first real consumer failed, and no test inside this repository could have said so.
-          for sym in pthread_create emscripten_longjmp saveSetjmp; do
+          for sym in pthread_create emscripten_longjmp saveSetjmp __wasm_setjmp; do
             found=0
             while read -r a; do
               n=$(grep -ac "$sym" "$a" || true)
@@ -545,13 +552,18 @@ jobs:
             local archive="$1" tag="$2"
             rm -rf "linkcheck/$tag"
             mkdir -p "linkcheck/$tag"
-            # -sSUPPORT_LONGJMP=wasm is not decoration. Plain emcc defaults to the JS-based
-            # setjmp model, so this link succeeded while the first real .NET consumer failed
-            # with "undefined symbol: emscripten_longjmp" -- .NET passes -mllvm
-            # -wasm-enable-sjlj and expects __wasm_longjmp instead. A check that does not use
-            # the consumer's own settings is a check that agrees with itself.
+            # These two flags are not decoration. Plain emcc defaults to JS exceptions and the
+            # JS setjmp model, so this link once succeeded while the first real .NET consumer
+            # failed on "undefined symbol: emscripten_longjmp". A check that does not use the
+            # consumer's settings only ever agrees with itself.
+            #
+            # What .NET actually does, read off its own link line and confirmed by linking a
+            # throwing archive into a .NET wasm application and running it: wasm exceptions,
+            # and no thread support. It does not resolve setjmp in either model, which is why
+            # the diagnostic above names any dependency that uses one.
             "$emcc" linkcheck/consumer.cpp "$archive" \
               -I include \
+              -fwasm-exceptions \
               -sSUPPORT_LONGJMP=wasm \
               -o "linkcheck/$tag/consumer.js" \
               2>&1 | tee "linkcheck/$tag.log"
