@@ -464,13 +464,17 @@ jobs:
         run: |
           set -euo pipefail
           found=0
+          # Skipping our own archive: by now the merge has renamed the bundle over it, so
+          # reading it here would report the whole bundle's count as ours. Our objects are
+          # checked before the merge, where the name still means what it says.
+          grep -v '^build/lib/libCesiumNativeC\.a$' archives.txt > deps.txt
           while read -r a; do
             n=$(grep -ac pthread_create "$a" || true)
             if [ "$n" != "0" ]; then
               printf '  %-70s %s\n' "$a" "$n"
               found=$((found + 1))
             fi
-          done < archives.txt
+          done < deps.txt
           if [ "$found" = "0" ]; then
             echo "  no dependency mentions pthread_create"
           else
@@ -530,24 +534,49 @@ jobs:
           }
           CONSUMER
 
-          "$emcc" linkcheck/consumer.cpp build/lib/libCesiumNativeC.a \
-            -I include \
-            -o linkcheck/consumer.js \
-            2>&1 | tee linkcheck/link.log
+          link_against() {
+            local archive="$1" tag="$2"
+            rm -rf "linkcheck/$tag"
+            mkdir -p "linkcheck/$tag"
+            "$emcc" linkcheck/consumer.cpp "$archive" \
+              -I include \
+              -o "linkcheck/$tag/consumer.js" \
+              2>&1 | tee "linkcheck/$tag.log"
+            test -f "linkcheck/$tag/consumer.wasm" || {
+              echo "::error::linking against $archive produced no wasm module"; return 1; }
+            "$EMSDK_NODE" "linkcheck/$tag/consumer.js"
+            stat -c%s "linkcheck/$tag/consumer.wasm"
+          }
 
-          test -f linkcheck/consumer.wasm || { echo "::error::the link produced no wasm module"; exit 1; }
-          echo "linked: $(stat -c%s linkcheck/consumer.wasm) bytes of wasm from a $(stat -c%s build/lib/libCesiumNativeC.a) byte archive"
+          # The gate, against exactly what the upload step ships.
+          asis=$(stat -c%s build/lib/libCesiumNativeC.a)
+          wasm_asis=$(link_against build/lib/libCesiumNativeC.a asis | tail -1)
+          echo "as shipped: archive $asis -> wasm $wasm_asis, and it ran"
 
-          # A consumer that links but dies on the first call would be a worse lie than one that
-          # does not link, so run it.
-          "$EMSDK_NODE" linkcheck/consumer.js
-          echo "the consumer ran"
+          # Measurement only, so the choice about package size is made on numbers rather than
+          # on the assumption that debug info dominates. Linking it too, because a size that
+          # comes with a broken archive is not a saving.
+          strip="$EMSDK/upstream/bin/llvm-strip"
+          if [ -x "$strip" ]; then
+            cp build/lib/libCesiumNativeC.a linkcheck/stripped.a
+            "$strip" --strip-debug linkcheck/stripped.a
+            stripped=$(stat -c%s linkcheck/stripped.a)
+            wasm_stripped=$(link_against linkcheck/stripped.a stripped | tail -1)
+            echo "stripped:   archive $stripped -> wasm $wasm_stripped, and it ran"
+            saved=$(( 100 - (stripped * 100 / asis) ))
+          else
+            echo "llvm-strip not found, skipping the measurement"
+            stripped=0; wasm_stripped=0; saved=0
+          fi
 
           {
             echo ""
-            echo "| link check | |"
-            echo "|---|---|"
-            echo "| wasm produced | $(stat -c%s linkcheck/consumer.wasm) bytes |"
+            echo "| archive | bytes | linked wasm |"
+            echo "|---|---|---|"
+            echo "| as shipped | $asis | $wasm_asis |"
+            echo "| --strip-debug | $stripped | $wasm_stripped |"
+            echo ""
+            echo "Stripping debug info would save ${saved}% of the archive."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifact
