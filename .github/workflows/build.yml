@@ -363,6 +363,16 @@ jobs:
           if (-not (Test-Path $emscriptenToolchain)) {
             throw "Emscripten toolchain not found at $emscriptenToolchain"
           }
+
+          # setup-emsdk exports EMSDK, EMSDK_NODE and EMSDK_PYTHON, and no EMSCRIPTEN. Draco's
+          # build insists on that one, and until now never said so: it was being restored from
+          # vcpkg's binary cache on every run. Changing the triplet changed the ABI hash, the
+          # cache stopped matching, and draco had to be compiled for the first time in this
+          # workflow's life -- which is when a latent requirement of its build surfaced.
+          #
+          # Nothing to do with the wasm ABI work; it was simply never exercised before.
+          $env:EMSCRIPTEN = "$env:EMSDK/upstream/emscripten"
+          Write-Host "EMSCRIPTEN=$env:EMSCRIPTEN"
           cmake -S . -B build `
             -G Ninja `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
