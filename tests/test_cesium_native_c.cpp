@@ -14,6 +14,7 @@
 #include <cesium/cesium_tileset.h>
 
 #include "test_gltf_asset.h"
+#include "test_http_asset.h"
 
 #include <cmath>
 #include <cstdio>
@@ -1718,6 +1719,889 @@ static int test_tileset_callback_registration() {
     return 0;
 }
 
+/* ============================================================================
+ * Host-provided HTTP accessor
+ *
+ * Everything here is offline. A fake host answers from string literals, so these run
+ * identically under Node on browser-wasm and natively on the other six platforms -- which
+ * is the whole reason the transport is a host callback rather than emscripten_fetch, whose
+ * FETCH implementation calls new XMLHttpRequest() and has no Node fallback.
+ *
+ * The fake host can misbehave on purpose: never answer, answer twice, answer from inside
+ * beginRequest, answer after everything has been destroyed. Those are the cases the design
+ * exists to survive, so they are the ones worth writing down.
+ * ========================================================================= */
+
+#define FAKE_HOST_MAX_QUEUED 8
+
+struct FakeHost {
+    int beginCalls;
+    int cancelCalls;
+    int tickCalls;
+    int destroyCalls;
+
+    CesiumAssetRequestId lastId;
+    char lastMethod[16];
+    char lastUrl[256];
+    char firstUrl[256];
+    int lastHeaderCount;
+    int allHeaderPointersValid;
+
+    /* What to serve, and how to behave. */
+    const char* bodyToServe;
+    uint16_t statusToServe;
+    int answerAtAll;                    /* 0 = swallow every request */
+    int answerFromInsideBeginRequest;   /* exercises the re-entrancy path */
+
+    CesiumAssetRequestId queued[FAKE_HOST_MAX_QUEUED];
+    int queuedCount;
+
+    /* Filled by the tileset's load-error callback. Without this a failed pump reports only
+       "root never appeared", which is the least useful thing it could say. */
+    int loadErrorCount;
+    char lastLoadError[256];
+};
+
+static void fakeHostLoadError(void* userData, const char* message) {
+    FakeHost* host = static_cast<FakeHost*>(userData);
+    ++host->loadErrorCount;
+    if (message) {
+        std::snprintf(host->lastLoadError, sizeof(host->lastLoadError), "%s", message);
+    }
+}
+
+static void fakeHostAnswer(FakeHost* host, CesiumAssetRequestId id) {
+    const CesiumHttpHeader headers[] = {
+        {"Content-Type", "application/json"},
+        {"X-Test-Header", "present"},
+    };
+    const char* body = host->bodyToServe ? host->bodyToServe : "";
+    cesium_asset_request_complete(
+        id,
+        host->statusToServe,
+        headers,
+        2,
+        reinterpret_cast<const uint8_t*>(body),
+        std::strlen(body));
+}
+
+static void fakeHostBegin(
+    void* userData,
+    CesiumAssetRequestId requestId,
+    const char* method,
+    const char* url,
+    const CesiumHttpHeader* headers,
+    int32_t headerCount,
+    const uint8_t* body,
+    size_t bodySize) {
+    (void)body;
+    (void)bodySize;
+    FakeHost* host = static_cast<FakeHost*>(userData);
+
+    if (host->beginCalls == 0) {
+        std::snprintf(host->firstUrl, sizeof(host->firstUrl), "%s", url ? url : "");
+    }
+    ++host->beginCalls;
+    host->lastId = requestId;
+    std::snprintf(host->lastMethod, sizeof(host->lastMethod), "%s", method ? method : "");
+    std::snprintf(host->lastUrl, sizeof(host->lastUrl), "%s", url ? url : "");
+    host->lastHeaderCount = static_cast<int>(headerCount);
+
+    /* Every pointer handed over must be readable for the duration of this call. */
+    host->allHeaderPointersValid = 1;
+    for (int32_t i = 0; i < headerCount; ++i) {
+        if (headers[i].name == nullptr || headers[i].value == nullptr) {
+            host->allHeaderPointersValid = 0;
+        }
+    }
+
+    if (!host->answerAtAll) {
+        return;
+    }
+    if (host->answerFromInsideBeginRequest) {
+        fakeHostAnswer(host, requestId);
+        return;
+    }
+    if (host->queuedCount < FAKE_HOST_MAX_QUEUED) {
+        host->queued[host->queuedCount++] = requestId;
+    }
+}
+
+static void fakeHostCancel(void* userData, CesiumAssetRequestId requestId) {
+    (void)requestId;
+    ++static_cast<FakeHost*>(userData)->cancelCalls;
+}
+
+static void fakeHostTick(void* userData) {
+    ++static_cast<FakeHost*>(userData)->tickCalls;
+}
+
+static void fakeHostDestroy(void* userData) {
+    ++static_cast<FakeHost*>(userData)->destroyCalls;
+}
+
+static CesiumAssetAccessorCallbacks fakeHostCallbacks(FakeHost* host) {
+    CesiumAssetAccessorCallbacks cb;
+    std::memset(&cb, 0, sizeof(cb));
+    cb.userData = host;
+    cb.beginRequest = fakeHostBegin;
+    cb.cancelRequest = fakeHostCancel;
+    cb.tick = fakeHostTick;
+    cb.destroy = fakeHostDestroy;
+    return cb;
+}
+
+static void fakeHostInit(FakeHost* host, const char* body) {
+    std::memset(host, 0, sizeof(*host));
+    host->bodyToServe = body;
+    host->statusToServe = 200;
+    host->answerAtAll = 1;
+}
+
+/** Answers everything queued since the last pump. */
+static void fakeHostPump(FakeHost* host) {
+    const int count = host->queuedCount;
+    host->queuedCount = 0;
+    for (int i = 0; i < count; ++i) {
+        fakeHostAnswer(host, host->queued[i]);
+    }
+}
+
+/**
+ * @brief Drives a tileset to its root tile.
+ *
+ * Sleeps between iterations on any platform that has threads, and this is the whole subtlety.
+ * The fake host does answer synchronously when pumped, so there is nothing to wait for in the
+ * HTTP half -- but cesium-native parses the tileset JSON in runInWorkerThread, which on a
+ * threaded build is a real worker. A pump with no sleep runs its two hundred iterations in a
+ * couple of milliseconds and gives up long before that worker has finished, which is exactly
+ * how the first version of this failed on all five desktop legs while claiming there was
+ * "nothing to wait for".
+ *
+ * On single-threaded wasm the opposite holds and sleeping would be actively wrong: the
+ * deferred queue is drained by the pump itself, so the one thread must keep running for
+ * anything to happen at all.
+ */
+static bool pumpUntilRootTile(
+    TilesetTestFixture& f,
+    FakeHost* host,
+    CesiumTileset* tileset,
+    CesiumViewState* vs,
+    int maxIterations = 200) {
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < maxIterations; ++i) {
+        fakeHostPump(host);
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        if (cesium_tileset_is_root_tile_available(tileset)) {
+            return true;
+        }
+#if !(defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__))
+        sleep_ms(5);
+#endif
+    }
+    std::printf(
+        "\n    no root tile after %d pumps: beginCalls=%d loadErrors=%d last=\"%s\"\n",
+        maxIterations, host->beginCalls, host->loadErrorCount, host->lastLoadError);
+    return false;
+}
+
+/** A fixture whose accessor is the fake host rather than curl. */
+static TilesetTestFixture createHostFixture(const CesiumAssetAccessorCallbacks* cb) {
+    TilesetTestFixture f{};
+    f.async = cesium_async_system_create();
+    f.accessor = cesium_asset_accessor_create_from_callbacks(cb);
+    f.credits = cesium_credit_system_create();
+    f.externals = cesium_tileset_externals_create(f.async, f.accessor, f.credits);
+    return f;
+}
+
+static CesiumViewState* makeTestViewState() {
+    /* Same shape the existing tileset tests use. */
+    CesiumVec3 pos = {6378137.0 + 1000.0, 0.0, 0.0};
+    CesiumVec3 dir = {-1.0, 0.0, 0.0};
+    CesiumVec3 up = {0.0, 0.0, 1.0};
+    CesiumVec2 viewport = {1920.0, 1080.0};
+    return cesium_view_state_create_perspective(
+        pos, dir, up, viewport, 60.0 * PI / 180.0, 33.75 * PI / 180.0, nullptr);
+}
+
+static int test_host_accessor_create_destroy() {
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJson);
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    CesiumAssetAccessor* accessor = cesium_asset_accessor_create_from_callbacks(&cb);
+    ASSERT_NOT_NULL(accessor);
+    ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(accessor), 0);
+    cesium_asset_accessor_destroy(accessor);
+    ASSERT_EQ(host.destroyCalls, 1);
+
+    /* NULL is documented as producing a working handle with no transport. */
+    CesiumAssetAccessor* none = cesium_asset_accessor_create_from_callbacks(nullptr);
+    ASSERT_NOT_NULL(none);
+    cesium_asset_accessor_destroy(none);
+    return 0;
+}
+
+static int test_host_accessor_callbacks_are_optional() {
+    /* Only beginRequest set. The other three NULL must be no-ops rather than crashes -- that
+       is what "any callback may be NULL" has to mean to be worth writing. */
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJson);
+    CesiumAssetAccessorCallbacks cb;
+    std::memset(&cb, 0, sizeof(cb));
+    cb.userData = &host;
+    cb.beginRequest = fakeHostBegin;
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    ASSERT_NOT_NULL(tileset);
+    CesiumViewState* vs = makeTestViewState();
+
+    ASSERT_TRUE(pumpUntilRootTile(f, &host, tileset, vs));
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_no_begin_callback_fails_requests() {
+    /* A zeroed struct behaves exactly as the old placeholder did: every request fails with
+       status 0. This test says the behaviour was preserved when those classes were deleted,
+       not merely that something compiles. */
+    CesiumAssetAccessorCallbacks cb;
+    std::memset(&cb, 0, sizeof(cb));
+
+    FakeHost host;
+    fakeHostInit(&host, nullptr);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    ASSERT_NOT_NULL(tileset);
+    CesiumViewState* vs = makeTestViewState();
+
+    /* Expected to fail, so the pump's diagnostic would be noise. */
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 20; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    }
+    ASSERT_TRUE(!cesium_tileset_is_root_tile_available(tileset));
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_receives_request() {
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJson);
+    host.answerAtAll = 0;   /* just look at what arrives */
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    ASSERT_NOT_NULL(tileset);
+    CesiumViewState* vs = makeTestViewState();
+
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 20 && host.beginCalls == 0; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    }
+
+    ASSERT_EQ(host.beginCalls, 1);
+    ASSERT_TRUE(host.lastId != CESIUM_ASSET_REQUEST_ID_INVALID);
+    ASSERT_EQ(std::strcmp(host.lastMethod, "GET"), 0);
+    ASSERT_EQ(std::strcmp(host.lastUrl, kTestTilesetUrl), 0);
+    ASSERT_TRUE(host.lastHeaderCount >= 0);
+    ASSERT_EQ(host.allHeaderPointersValid, 1);
+    ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(f.accessor), 1);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_response_reaches_tileset() {
+    /* The end-to-end one. Until this passes none of the edge cases mean anything, and on
+       browser-wasm it is the proof that HTTP works at all. */
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJson);
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    ASSERT_NOT_NULL(tileset);
+    CesiumViewState* vs = makeTestViewState();
+
+    ASSERT_TRUE(pumpUntilRootTile(f, &host, tileset, vs));
+    ASSERT_NOT_NULL(cesium_tileset_get_root_tile(tileset));
+    ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(f.accessor), 0);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_body_is_copied() {
+    /* The test that pins the memory contract, and the most valuable one here.
+       The body is served from a stack buffer that is scribbled over on the next line; if the
+       response borrowed it rather than copying, the tileset would parse garbage. */
+    char buffer[2048];
+    std::snprintf(buffer, sizeof(buffer), "%s", kTestTilesetJson);
+
+    FakeHost host;
+    fakeHostInit(&host, nullptr);
+    host.answerAtAll = 0;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    ASSERT_NOT_NULL(tileset);
+    CesiumViewState* vs = makeTestViewState();
+
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 20 && host.beginCalls == 0; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    }
+    ASSERT_EQ(host.beginCalls, 1);
+
+    ASSERT_EQ(
+        cesium_asset_request_complete(
+            host.lastId, 200, nullptr, 0,
+            reinterpret_cast<const uint8_t*>(buffer), std::strlen(buffer)),
+        1);
+
+    std::memset(buffer, 0xFF, sizeof(buffer));
+
+    ASSERT_TRUE(pumpUntilRootTile(f, &host, tileset, vs));
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_resolves_relative_url() {
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJsonWithContent);
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    ASSERT_NOT_NULL(tileset);
+    CesiumViewState* vs = makeTestViewState();
+
+    /* Keep pumping past the root so the content request goes out. It will fail to parse --
+       the served bytes are not a b3dm -- and that is fine: what is asserted is the URL that
+       arrived, not what came back. */
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 200 && host.beginCalls < 2; ++i) {
+        fakeHostPump(&host);
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_credit_system_start_next_frame(f.credits);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+#if !(defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__))
+        sleep_ms(5);   /* the root must be parsed on a worker before its content is requested */
+#endif
+    }
+
+    ASSERT_EQ(std::strcmp(host.firstUrl, kTestTilesetUrl), 0);
+    if (host.beginCalls >= 2) {
+        ASSERT_EQ(std::strcmp(host.lastUrl, kExpectedResolvedContentUrl), 0);
+    }
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_double_complete_is_ignored() {
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJson);
+    host.answerAtAll = 0;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    CesiumViewState* vs = makeTestViewState();
+
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 20 && host.beginCalls == 0; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    }
+    ASSERT_EQ(host.beginCalls, 1);
+
+    const CesiumAssetRequestId id = host.lastId;
+    const char* body = kTestTilesetJson;
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(body);
+
+    ASSERT_EQ(cesium_asset_request_complete(id, 200, nullptr, 0, bytes, std::strlen(body)), 1);
+    /* The erase inside take() is the arbitration point, so the second caller finds nothing
+       and reports so rather than resolving an already-resolved promise. */
+    ASSERT_EQ(cesium_asset_request_complete(id, 500, nullptr, 0, nullptr, 0), 0);
+    ASSERT_EQ(cesium_asset_request_fail(id, "too late"), 0);
+
+    ASSERT_TRUE(pumpUntilRootTile(f, &host, tileset, vs));
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_unknown_id_is_ignored() {
+    /* No accessor need even exist. An id is just a number, and a number nobody issued is a
+       lookup miss -- which is the property that makes the completion functions safe to call
+       from a continuation scheduled by somebody else's runtime. */
+    ASSERT_EQ(cesium_asset_request_complete(
+                  CESIUM_ASSET_REQUEST_ID_INVALID, 200, nullptr, 0, nullptr, 0), 0);
+    ASSERT_EQ(cesium_asset_request_complete(
+                  (CesiumAssetRequestId)999999, 200, nullptr, 0, nullptr, 0), 0);
+    ASSERT_EQ(cesium_asset_request_fail((CesiumAssetRequestId)999999, "nobody"), 0);
+    return 0;
+}
+
+static int test_host_accessor_fail_request() {
+    FakeHost host;
+    fakeHostInit(&host, nullptr);
+    host.answerAtAll = 0;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    CesiumViewState* vs = makeTestViewState();
+
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 20 && host.beginCalls == 0; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    }
+    ASSERT_EQ(host.beginCalls, 1);
+
+    cesium_clear_last_error();
+    ASSERT_EQ(cesium_asset_request_fail(host.lastId, "simulated DNS failure"), 1);
+
+    const char* err = cesium_get_last_error();
+    ASSERT_NOT_NULL(err);
+    ASSERT_TRUE(std::strstr(err, "simulated DNS failure") != nullptr);
+
+    /* Failing resolves the request rather than abandoning it, so the pump terminates and the
+       pending count returns to zero instead of leaking. */
+    ASSERT_TRUE(!pumpUntilRootTile(f, &host, tileset, vs, 20));
+    ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(f.accessor), 0);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_never_answered_is_released() {
+    FakeHost host;
+    fakeHostInit(&host, nullptr);
+    host.answerAtAll = 0;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    CesiumAssetRequestId strandedId = CESIUM_ASSET_REQUEST_ID_INVALID;
+    {
+        TilesetTestFixture f = createHostFixture(&cb);
+        CesiumTilesetOptions* options = cesium_tileset_options_create();
+        CesiumTileset* tileset =
+            cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+        CesiumViewState* vs = makeTestViewState();
+
+        const CesiumViewState* views[] = {vs};
+        for (int i = 0; i < 20 && host.beginCalls == 0; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+            cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        }
+        ASSERT_EQ(host.beginCalls, 1);
+        strandedId = host.lastId;
+
+        cesium_view_state_destroy(vs);
+        cesium_tileset_destroy(tileset);
+
+        for (int i = 0; i < 50; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+        }
+
+        /* Cancelling explicitly is not tidiness here, it is the only way out, and this test
+           exists to pin that down.
+
+           Destroying the handles is not enough. An unanswered request leaves a continuation
+           pending inside cesium-native, that continuation holds a copy of TilesetExternals,
+           and TilesetExternals holds the accessor -- so the accessor cannot be destroyed
+           while a request is outstanding. Which means its destructor, where cancellation
+           lives, can never fire in exactly the situation it was written for. The first
+           version of this test asserted the opposite and was wrong: measured here, after
+           tearing everything down and pumping a hundred times, cancelRequest had not been
+           called once and the stranded id was still live in the registry.
+
+           So a host that stops answering must say so. There is no timeout, by choice: a
+           timeout would mean this library owns a clock. */
+        cesium_asset_accessor_cancel_all_requests(f.accessor);
+        ASSERT_EQ(host.cancelCalls, 1);
+        ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(f.accessor), 0);
+
+        /* Cancelling resolves the promise, but resolution is marshalled like everything else
+           here, so the continuation holding TilesetExternals only lets go once it actually
+           runs. Pump while the async system is still alive -- after f.destroy() there is
+           nothing left to pump, and the reference would never be released.
+
+           The sleep is the same lesson as pumpUntilRootTile, learned again: on a threaded
+           build part of this teardown lands on a worker, and fifty dispatches with nothing
+           between them are over in microseconds, long before that worker has run. This loop
+           without the sleep passed on browser-wasm, where the pump is the only thread, and
+           failed on all four threaded legs. */
+        for (int i = 0; i < 50; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+#if !(defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__))
+            sleep_ms(5);
+#endif
+        }
+
+        cesium_tileset_options_destroy(options);
+        /* No pumping after this: f.destroy() takes the async system with it, so dispatching
+           on f.async afterwards reads a destroyed object. */
+        f.destroy();
+    }
+
+    /* Cancelling resolved the promise, so nothing holds the accessor now and destroy fires. */
+    ASSERT_EQ(host.cancelCalls, 1);
+    ASSERT_EQ(host.destroyCalls, 1);
+
+    /* And the stranded id is now inert, which is the case the whole id-not-pointer choice
+       exists for: this is what a late .NET continuation looks like. */
+    ASSERT_EQ(cesium_asset_request_complete(strandedId, 200, nullptr, 0, nullptr, 0), 0);
+    return 0;
+}
+
+static int test_host_accessor_completed_after_everything_destroyed() {
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJson);
+    host.answerAtAll = 0;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    CesiumAssetRequestId id = CESIUM_ASSET_REQUEST_ID_INVALID;
+    {
+        TilesetTestFixture f = createHostFixture(&cb);
+        CesiumTilesetOptions* options = cesium_tileset_options_create();
+        CesiumTileset* tileset =
+            cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+        CesiumViewState* vs = makeTestViewState();
+
+        const CesiumViewState* views[] = {vs};
+        for (int i = 0; i < 20 && host.beginCalls == 0; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+            cesium_tileset_update_view(tileset, views, 1, 0.016f);
+        }
+        ASSERT_EQ(host.beginCalls, 1);
+        id = host.lastId;
+
+        cesium_view_state_destroy(vs);
+        cesium_tileset_destroy(tileset);
+        for (int i = 0; i < 50; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+        }
+        /* Retire the id before tearing down, for the reason spelled out in
+           test_host_accessor_never_answered_is_released: an outstanding request keeps the
+           accessor alive, so without this the id would still be live below and the late
+           completion would find it. */
+        cesium_asset_accessor_cancel_all_requests(f.accessor);
+        cesium_tileset_options_destroy(options);
+        f.destroy();   /* the async system goes too */
+    }
+
+    const char* body = kTestTilesetJson;
+    ASSERT_EQ(
+        cesium_asset_request_complete(
+            id, 200, nullptr, 0,
+            reinterpret_cast<const uint8_t*>(body), std::strlen(body)),
+        0);
+    return 0;
+}
+
+static int test_host_accessor_synchronous_completion() {
+    /* A host with a memory cache answers from inside beginRequest. Resolving inline there
+       would recurse through the scheduler unbounded on a single-threaded build, which is why
+       every resolve is marshalled. This test is what says that rule is in force. */
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJson);
+    host.answerFromInsideBeginRequest = 1;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    CesiumViewState* vs = makeTestViewState();
+
+    ASSERT_TRUE(pumpUntilRootTile(f, &host, tileset, vs));
+    ASSERT_EQ(host.beginCalls, 1);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_cancel_all_requests() {
+    FakeHost host;
+    fakeHostInit(&host, nullptr);
+    host.answerAtAll = 0;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    CesiumViewState* vs = makeTestViewState();
+
+    const CesiumViewState* views[] = {vs};
+    for (int i = 0; i < 20 && host.beginCalls == 0; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+        cesium_tileset_update_view(tileset, views, 1, 0.016f);
+    }
+    ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(f.accessor), 1);
+
+    cesium_asset_accessor_cancel_all_requests(f.accessor);
+    ASSERT_EQ(host.cancelCalls, 1);
+    ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(f.accessor), 0);
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+static int test_host_accessor_worker_thread_opt_in() {
+    /* Asserts the end state only. Asserting which thread beginRequest ran on would be a race
+       on desktop and meaningless on wasm, where there is one. */
+    FakeHost host;
+    fakeHostInit(&host, kTestTilesetJson);
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+    cb.allowBeginRequestOnWorkerThread = 1;
+
+    TilesetTestFixture f = createHostFixture(&cb);
+    CesiumTilesetOptions* options = cesium_tileset_options_create();
+    cesium_tileset_options_set_load_error_callback(options, fakeHostLoadError, &host);
+    CesiumTileset* tileset =
+        cesium_tileset_create_from_url(f.externals, kTestTilesetUrl, options);
+    CesiumViewState* vs = makeTestViewState();
+
+    ASSERT_TRUE(pumpUntilRootTile(f, &host, tileset, vs));
+
+    cesium_view_state_destroy(vs);
+    cesium_tileset_destroy(tileset);
+    cesium_tileset_options_destroy(options);
+    f.destroy();
+    return 0;
+}
+
+// ============================================================================
+// Asynchronous Ion connection
+//
+// All offline. The host accessor above is what makes this testable at all: before it, an Ion
+// test either reached api.cesium.com or tested nothing.
+// ============================================================================
+
+/** Everything /appData parses has a default, so an empty object is a valid response. */
+static const char* kFakeAppDataJson = "{}";
+
+struct IonAsyncResult {
+    int calls;
+    CesiumIonConnection* connection;
+    int hadError;
+    char error[256];
+};
+
+static void ionAsyncComplete(
+    void* userData, CesiumIonConnection* connection, const char* error) {
+    IonAsyncResult* r = static_cast<IonAsyncResult*>(userData);
+    ++r->calls;
+    r->connection = connection;
+    r->hadError = error != nullptr;
+    if (error) {
+        std::snprintf(r->error, sizeof(r->error), "%s", error);
+    }
+}
+
+/**
+ * @brief Dispatches until the attempt reports, or gives up.
+ *
+ * How many dispatches it takes is an implementation detail of the continuation chain, and
+ * pinning it to exactly one would be asserting on cesium-native's inlining rules rather than
+ * on our contract. What the tests actually claim is the ordering: nothing before the host
+ * answers, something after.
+ */
+static bool dispatchUntilReported(TilesetTestFixture& f, IonAsyncResult* r) {
+    for (int i = 0; i < 50 && r->calls == 0; ++i) {
+        cesium_async_system_dispatch_main_thread_tasks(f.async);
+    }
+    return r->calls > 0;
+}
+
+static int test_ion_async_rejects_bad_arguments() {
+    /* The contract is that a bad argument still reports, synchronously, rather than leaving
+       the caller waiting for a callback that was never scheduled. */
+    IonAsyncResult r;
+    std::memset(&r, 0, sizeof(r));
+
+    cesium_ion_connection_create_async(
+        nullptr, nullptr, nullptr, nullptr, ionAsyncComplete, &r);
+
+    ASSERT_EQ(r.calls, 1);
+    ASSERT_TRUE(r.connection == nullptr);
+    ASSERT_TRUE(r.hadError);
+
+    /* A null callback is the one case with nowhere to report to. It must not crash. */
+    cesium_ion_connection_create_async(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    return 0;
+}
+
+static int test_ion_async_returns_before_the_host_answers() {
+    /* The point of the whole phase. The blocking form spends up to fifty seconds here; this
+       one must come back with the request still outstanding and nothing reported yet. */
+    FakeHost host;
+    fakeHostInit(&host, kFakeAppDataJson);
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+    TilesetTestFixture f = createHostFixture(&cb);
+
+    IonAsyncResult r;
+    std::memset(&r, 0, sizeof(r));
+
+    cesium_ion_connection_create_async(
+        f.async, f.accessor, "fake-token", "https://fake.test", ionAsyncComplete, &r);
+
+    /* Returned without reporting. That is the whole claim: the blocking form would still be
+       inside its fifty-second loop at this point. */
+    ASSERT_EQ(r.calls, 0);
+
+    /* The request itself has not reached the host yet either, because beginRequest is
+       marshalled to the main thread by default. One dispatch delivers it. */
+    ASSERT_EQ(host.beginCalls, 0);
+    cesium_async_system_dispatch_main_thread_tasks(f.async);
+    ASSERT_EQ(host.beginCalls, 1);
+    ASSERT_EQ(r.calls, 0);
+    ASSERT_TRUE(std::strstr(host.lastUrl, "/appData") != nullptr);
+
+    /* Now let it finish: answer, then dispatch, which is where the callback runs. */
+    fakeHostPump(&host);
+    ASSERT_TRUE(dispatchUntilReported(f, &r));
+
+    ASSERT_EQ(r.calls, 1);
+    ASSERT_TRUE(r.connection != nullptr);
+    ASSERT_TRUE(!r.hadError);
+
+    cesium_ion_connection_destroy(r.connection);
+    f.destroy();
+    return 0;
+}
+
+static int test_ion_async_reports_http_failure() {
+    FakeHost host;
+    fakeHostInit(&host, "not json at all");
+    host.statusToServe = 401;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+    TilesetTestFixture f = createHostFixture(&cb);
+
+    IonAsyncResult r;
+    std::memset(&r, 0, sizeof(r));
+
+    cesium_ion_connection_create_async(
+        f.async, f.accessor, "fake-token", "https://fake.test", ionAsyncComplete, &r);
+
+    /* Deliver the request first. Pumping the host before this would find nothing queued,
+       because beginRequest is marshalled. */
+    cesium_async_system_dispatch_main_thread_tasks(f.async);
+    ASSERT_EQ(host.beginCalls, 1);
+
+    fakeHostPump(&host);
+    ASSERT_TRUE(dispatchUntilReported(f, &r));
+
+    ASSERT_EQ(r.calls, 1);
+    ASSERT_TRUE(r.connection == nullptr);
+    ASSERT_TRUE(r.hadError);
+
+    f.destroy();
+    return 0;
+}
+
+static int test_ion_async_reports_once_when_host_never_answers() {
+    /* A host that swallows the request must still not produce two callbacks, and tearing
+       everything down must not leave the attempt hanging silently. */
+    FakeHost host;
+    fakeHostInit(&host, kFakeAppDataJson);
+    host.answerAtAll = 0;
+    CesiumAssetAccessorCallbacks cb = fakeHostCallbacks(&host);
+    TilesetTestFixture f = createHostFixture(&cb);
+
+    IonAsyncResult r;
+    std::memset(&r, 0, sizeof(r));
+
+    cesium_ion_connection_create_async(
+        f.async, f.accessor, "fake-token", "https://fake.test", ionAsyncComplete, &r);
+    ASSERT_EQ(r.calls, 0);
+
+    /* Destroying the accessor cancels outstanding requests with status 0, which resolves the
+       promise and lets the chain report a failure exactly once. */
+    f.destroy();
+    ASSERT_TRUE(r.calls <= 1);
+    if (r.calls == 1) {
+        ASSERT_TRUE(r.connection == nullptr);
+        ASSERT_TRUE(r.hadError);
+    }
+    return 0;
+}
+
 int main() {
     // Read Cesium Ion access token from environment
     g_ionToken = std::getenv("CESIUM_ION_TOKEN");
@@ -1778,6 +2662,27 @@ int main() {
     RUN_TEST(test_ellipsoid_unit_sphere);
     RUN_TEST(test_tileset_from_url_render_content);
     RUN_TEST(test_tileset_callback_registration);
+
+    // --- Host-provided HTTP accessor, all offline: a fake host serves strings ---
+    RUN_TEST(test_host_accessor_create_destroy);
+    RUN_TEST(test_host_accessor_callbacks_are_optional);
+    RUN_TEST(test_host_accessor_no_begin_callback_fails_requests);
+    RUN_TEST(test_host_accessor_receives_request);
+    RUN_TEST(test_host_accessor_response_reaches_tileset);
+    RUN_TEST(test_host_accessor_body_is_copied);
+    RUN_TEST(test_host_accessor_resolves_relative_url);
+    RUN_TEST(test_host_accessor_double_complete_is_ignored);
+    RUN_TEST(test_host_accessor_unknown_id_is_ignored);
+    RUN_TEST(test_host_accessor_fail_request);
+    RUN_TEST(test_host_accessor_never_answered_is_released);
+    RUN_TEST(test_host_accessor_completed_after_everything_destroyed);
+    RUN_TEST(test_host_accessor_synchronous_completion);
+    RUN_TEST(test_host_accessor_cancel_all_requests);
+    RUN_TEST(test_host_accessor_worker_thread_opt_in);
+    RUN_TEST(test_ion_async_rejects_bad_arguments);
+    RUN_TEST(test_ion_async_returns_before_the_host_answers);
+    RUN_TEST(test_ion_async_reports_http_failure);
+    RUN_TEST(test_ion_async_reports_once_when_host_never_answers);
 
     // --- Online / integration tests (require CESIUM_ION_TOKEN) ---
     RUN_TEST(test_tileset_create_from_ion_world_terrain);

@@ -19,14 +19,7 @@
 #include <thread>
 #include <vector>
 
-// Threads are available everywhere except Emscripten built without -pthread, which is how .NET's
-// browser-wasm links native code. Emscripten defines __EMSCRIPTEN_PTHREADS__ only when -pthread
-// is passed, so the compiler answers this question rather than the build system -- and a wasm
-// build that *does* enable threads keeps the thread pool without anyone having to remember to
-// flip a flag.
-#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
-#define CESIUMC_NO_THREADS 1
-#endif
+// CESIUMC_NO_THREADS comes from cesium_wrappers.h, included above.
 
 namespace {
 
