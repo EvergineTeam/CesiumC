@@ -361,8 +361,8 @@ jobs:
             -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
             -DCMAKE_CROSSCOMPILING_EMULATOR="$env:EMSDK_NODE" `
             -DCESIUM_WASM_SHARED_MEMORY=OFF `
-            -DCMAKE_CXX_FLAGS=-DSIZEOF_SIZE_T=4 `
-            -DCMAKE_C_FLAGS=-DSIZEOF_SIZE_T=4 `
+            -DCMAKE_CXX_FLAGS="-DSIZEOF_SIZE_T=4 -sSUPPORT_LONGJMP=wasm" `
+            -DCMAKE_C_FLAGS="-DSIZEOF_SIZE_T=4 -sSUPPORT_LONGJMP=wasm" `
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
 
       - name: CMake build
@@ -463,23 +463,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          found=0
           # Skipping our own archive: by now the merge has renamed the bundle over it, so
           # reading it here would report the whole bundle's count as ours. Our objects are
           # checked before the merge, where the name still means what it says.
           grep -v '^build/lib/libCesiumNativeC\.a$' archives.txt > deps.txt
-          while read -r a; do
-            n=$(grep -ac pthread_create "$a" || true)
-            if [ "$n" != "0" ]; then
-              printf '  %-70s %s\n' "$a" "$n"
-              found=$((found + 1))
+
+          # emscripten_longjmp is here for the same reason -pthread and -fwasm-exceptions are
+          # checked at all: it is a third setting that has to agree across the whole link. An
+          # archive built with the JS-based setjmp model cannot be linked by .NET, which passes
+          # -mllvm -wasm-enable-sjlj and so expects __wasm_longjmp. That is precisely how the
+          # first real consumer failed, and no test inside this repository could have said so.
+          for sym in pthread_create emscripten_longjmp saveSetjmp; do
+            found=0
+            while read -r a; do
+              n=$(grep -ac "$sym" "$a" || true)
+              if [ "$n" != "0" ]; then
+                printf '  %-24s %-58s %s\n' "$sym" "$a" "$n"
+                found=$((found + 1))
+              fi
+            done < deps.txt
+            if [ "$found" = "0" ]; then
+              printf '  %-24s no dependency mentions it\n' "$sym"
             fi
-          done < deps.txt
-          if [ "$found" = "0" ]; then
-            echo "  no dependency mentions pthread_create"
-          else
-            echo "$found archive(s) mention pthread_create; the link below decides whether it matters"
-          fi
+          done
+          echo "the link below decides which of these actually matter"
 
       # The gate. Everything before this says what is inside the archive; only a link says
       # whether a consumer can use it.
@@ -538,8 +545,14 @@ jobs:
             local archive="$1" tag="$2"
             rm -rf "linkcheck/$tag"
             mkdir -p "linkcheck/$tag"
+            # -sSUPPORT_LONGJMP=wasm is not decoration. Plain emcc defaults to the JS-based
+            # setjmp model, so this link succeeded while the first real .NET consumer failed
+            # with "undefined symbol: emscripten_longjmp" -- .NET passes -mllvm
+            # -wasm-enable-sjlj and expects __wasm_longjmp instead. A check that does not use
+            # the consumer's own settings is a check that agrees with itself.
             "$emcc" linkcheck/consumer.cpp "$archive" \
               -I include \
+              -sSUPPORT_LONGJMP=wasm \
               -o "linkcheck/$tag/consumer.js" \
               2>&1 | tee "linkcheck/$tag.log"
             test -f "linkcheck/$tag/consumer.wasm" || {
