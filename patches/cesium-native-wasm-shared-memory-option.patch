@@ -1,29 +1,39 @@
 diff --git a/cmake/compiler.cmake b/cmake/compiler.cmake
-index baa5a9041..a1d943ad1 100644
+index baa5a9041..4c8ff7fba 100644
 --- a/cmake/compiler.cmake
 +++ b/cmake/compiler.cmake
-@@ -4,11 +4,27 @@
+@@ -4,11 +4,37 @@
  #     add_compile_options(-Werror -Wall -Wextra -Wconversion -Wpedantic -Wshadow -Wsign-conversion)
  # endif()
  
-+# -pthread and -fwasm-exceptions are all-or-nothing across a link: the first changes the memory
-+# model to shared, the second picks an exception scheme, and every object in the final binary has
-+# to agree. That makes them a property of the embedding application rather than of the wasm target,
-+# and an engine whose runtime uses neither cannot link a cesium-native built with them.
++# Three of the wasm settings below are all-or-nothing across a link: every object in the final
++# binary has to agree, which makes them a property of the embedding application rather than of
++# the wasm target. An engine whose runtime does not use them cannot link a cesium-native that
++# does. Both options default to ON, so nothing changes for an existing build.
 +#
-+# Defaults to ON, so this changes nothing for an existing build. Turn it off to produce a
-+# single-threaded, JS-exception build.
++# -pthread switches the memory model to shared, and it drags -fwasm-exceptions and
++# -sSUPPORT_LONGJMP=wasm along with it: emscripten refuses the JS longjmp model alongside wasm
++# exceptions, so the three move together or not at all.
 +option(CESIUM_WASM_SHARED_MEMORY "Build wasm with shared memory (-pthread) and native wasm exceptions" ON)
++
++# -mnontrapping-fptoint emits i32.trunc_sat_*, and a consumer whose post-link tooling does not
++# enable that feature rejects the module. .NET's browser-wasm is one: it runs wasm-opt with
++# --enable-simd --enable-exception-handling --enable-bulk-memory and nothing else, so simd and
++# bulk memory are fine and this one fails validation. Measured, on a real .NET publish.
++option(CESIUM_WASM_NONTRAPPING_FPTOINT "Emit non-trapping float-to-int conversions on wasm" ON)
 +
  if(CESIUM_TARGET_WASM)
 -  add_compile_options(-pthread -msimd128 -mnontrapping-fptoint -mbulk-memory -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
 -  add_link_options(-pthread -sALLOW_MEMORY_GROWTH=1 -sPTHREAD_POOL_SIZE=4 -sMAXIMUM_MEMORY=4294967296 -sMIN_NODE_VERSION=200000 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=1048576 -fwasm-exceptions -mbulk-memory -mnontrapping-fptoint -msse4.2 -sWASM_BIGINT -sSUPPORT_LONGJMP=wasm -sFORCE_FILESYSTEM -sPROXY_TO_PTHREAD)
-+  # Wasm feature flags rather than ABI choices: they widen the instruction set the compiler may
-+  # emit and cost a consumer nothing, so they apply either way.
-+  add_compile_options(-msimd128 -mnontrapping-fptoint -mbulk-memory)
-+  add_link_options(-sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sMIN_NODE_VERSION=200000 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=1048576 -mbulk-memory -mnontrapping-fptoint -sWASM_BIGINT -sFORCE_FILESYSTEM)
++  add_compile_options(-msimd128 -mbulk-memory)
++  add_link_options(-sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296 -sMIN_NODE_VERSION=200000 -sINITIAL_MEMORY=268435456 -sSTACK_SIZE=1048576 -mbulk-memory -msse4.2 -sWASM_BIGINT -sFORCE_FILESYSTEM)
    add_link_options($<$<CONFIG:Debug>:-gsource-map>)
  
++  if(CESIUM_WASM_NONTRAPPING_FPTOINT)
++    add_compile_options(-mnontrapping-fptoint)
++    add_link_options(-mnontrapping-fptoint)
++  endif()
++
 +  if(CESIUM_WASM_SHARED_MEMORY)
 +    add_compile_options(-pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
 +    add_link_options(-pthread -sPTHREAD_POOL_SIZE=4 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sPROXY_TO_PTHREAD)

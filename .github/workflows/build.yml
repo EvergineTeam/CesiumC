@@ -346,6 +346,11 @@ jobs:
       # Emscripten CI never meets it. blend2d[core] does build for wasm; the Supports field is a
       # blanket statement about the port including its jit feature, and cesium-native asks for
       # [core] precisely because wasm has no jit.
+      # No overlay triplet and no ABI flags here, deliberately. Both were attempts to force the
+      # vcpkg ports onto the wasm exception and setjmp models, and neither was needed: the only
+      # setjmp in the whole archive came from turbojpeg, which CESIUM_DISABLE_LIBJPEG_TURBO
+      # removes. The overlay triplet cost two runs of its own, because it replaces vcpkg's
+      # community triplet rather than extending it and silently dropped what that one did.
       - name: CMake configure
         shell: pwsh
         run: |
@@ -361,6 +366,7 @@ jobs:
             -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
             -DCMAKE_CROSSCOMPILING_EMULATOR="$env:EMSDK_NODE" `
             -DCESIUM_WASM_SHARED_MEMORY=OFF `
+            -DCESIUM_WASM_NONTRAPPING_FPTOINT=OFF `
             -DCMAKE_CXX_FLAGS=-DSIZEOF_SIZE_T=4 `
             -DCMAKE_C_FLAGS=-DSIZEOF_SIZE_T=4 `
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
@@ -378,7 +384,14 @@ jobs:
       # the merged archive below, where most of the hundred and thirty-nine libraries contribute
       # no member at all. So this check stays here, on our own code, and the merged archive is
       # policed by an actual link instead.
-      - name: Verify our own objects are single-threaded and free of wasm exceptions
+      #
+      # The exception symbols used to be checked here and no longer are, because the reasoning
+      # behind that was wrong. It assumed .NET could not link an archive built with wasm
+      # exceptions; measured instead of assumed, .NET requires them -- its own link passes
+      # -mllvm -exception-model=wasm and -lc++-except, and a throwing archive built with
+      # -fwasm-exceptions links into a .NET wasm application and runs. The check was rejecting
+      # the only archive that works.
+      - name: Verify our own objects are single-threaded
         shell: bash
         run: |
           set -euo pipefail
@@ -386,7 +399,7 @@ jobs:
           test -f "$archive" || { echo "::error::$archive was not produced"; exit 1; }
           echo "archive: $archive ($(stat -c%s "$archive") bytes)"
           failed=0
-          for sym in __cpp_exception __wasm_lpad_context _Unwind_CallPersonality pthread_create; do
+          for sym in pthread_create; do
             count=$(grep -ac "$sym" "$archive" || true)
             printf '  %-26s %s\n' "$sym" "$count"
             if [ "$count" != "0" ]; then
@@ -418,7 +431,19 @@ jobs:
           # Git Bash, so an absolute $PWD reaches it as /d/a/... and it answers "no such file
           # or directory". The paths find produces are relative already, which it accepts.
           bundle="build/lib/libCesiumNativeC-bundle.a"
-          find build -name '*.a' ! -path '*/libCesiumNativeC-bundle.a' | sort -u > archives.txt
+
+          # vcpkg installs each port twice, release under lib/ and debug under debug/lib/, and
+          # a plain find takes both: 257 archives instead of 139, and 340 MB instead of 55. It
+          # went unnoticed while the ports came from the binary cache, which does not
+          # materialise the debug tree. Shipping both would also put two builds of the same
+          # library in one archive and leave the consumer's linker to pick.
+          find build -name '*.a' ! -path '*/debug/*' ! -path '*/libCesiumNativeC-bundle.a' \
+            | sort -u > archives.txt
+          if grep -q '/debug/' archives.txt; then
+            echo "::error::the debug tree reached the merge list; the exclusion above no longer matches the layout"
+            grep '/debug/' archives.txt
+            exit 1
+          fi
           count=$(wc -l < archives.txt)
           if [ "$count" -lt 2 ]; then
             echo "::error::found only $count archive(s); the dependency libraries are not where this expects them"
@@ -463,23 +488,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          found=0
           # Skipping our own archive: by now the merge has renamed the bundle over it, so
           # reading it here would report the whole bundle's count as ours. Our objects are
           # checked before the merge, where the name still means what it says.
           grep -v '^build/lib/libCesiumNativeC\.a$' archives.txt > deps.txt
-          while read -r a; do
-            n=$(grep -ac pthread_create "$a" || true)
-            if [ "$n" != "0" ]; then
-              printf '  %-70s %s\n' "$a" "$n"
-              found=$((found + 1))
+
+          # emscripten_longjmp is here for the same reason -pthread and -fwasm-exceptions are
+          # checked at all: it is a third setting that has to agree across the whole link. An
+          # archive built with the JS-based setjmp model cannot be linked by .NET, which passes
+          # -mllvm -wasm-enable-sjlj and so expects __wasm_longjmp. That is precisely how the
+          # first real consumer failed, and no test inside this repository could have said so.
+          for sym in pthread_create emscripten_longjmp saveSetjmp __wasm_setjmp; do
+            found=0
+            while read -r a; do
+              n=$(grep -ac "$sym" "$a" || true)
+              if [ "$n" != "0" ]; then
+                printf '  %-24s %-58s %s\n' "$sym" "$a" "$n"
+                found=$((found + 1))
+              fi
+            done < deps.txt
+            if [ "$found" = "0" ]; then
+              printf '  %-24s no dependency mentions it\n' "$sym"
             fi
-          done < deps.txt
-          if [ "$found" = "0" ]; then
-            echo "  no dependency mentions pthread_create"
-          else
-            echo "$found archive(s) mention pthread_create; the link below decides whether it matters"
-          fi
+          done
+          echo "the link below decides which of these actually matter"
 
       # The gate. Everything before this says what is inside the archive; only a link says
       # whether a consumer can use it.
@@ -538,6 +570,10 @@ jobs:
             local archive="$1" tag="$2"
             rm -rf "linkcheck/$tag"
             mkdir -p "linkcheck/$tag"
+            # Plain emcc, no ABI flags. This check cannot be made faithful to .NET by guessing
+            # flags -- it was tried, twice, and both times it agreed with itself while the real
+            # consumer failed. The faithful check is the .NET publish further down; this one is
+            # only here to catch an archive that is missing symbols outright.
             "$emcc" linkcheck/consumer.cpp "$archive" \
               -I include \
               -o "linkcheck/$tag/consumer.js" \
@@ -553,31 +589,116 @@ jobs:
           wasm_asis=$(link_against build/lib/libCesiumNativeC.a asis | tail -1)
           echo "as shipped: archive $asis -> wasm $wasm_asis, and it ran"
 
-          # Measurement only, so the choice about package size is made on numbers rather than
-          # on the assumption that debug info dominates. Linking it too, because a size that
-          # comes with a broken archive is not a saving.
-          strip="$EMSDK/upstream/bin/llvm-strip"
-          if [ -x "$strip" ]; then
-            cp build/lib/libCesiumNativeC.a linkcheck/stripped.a
-            "$strip" --strip-debug linkcheck/stripped.a
-            stripped=$(stat -c%s linkcheck/stripped.a)
-            wasm_stripped=$(link_against linkcheck/stripped.a stripped | tail -1)
-            echo "stripped:   archive $stripped -> wasm $wasm_stripped, and it ran"
-            saved=$(( 100 - (stripped * 100 / asis) ))
-          else
-            echo "llvm-strip not found, skipping the measurement"
-            stripped=0; wasm_stripped=0; saved=0
-          fi
-
+          # The --strip-debug measurement that used to live here is gone. It was asked once and
+          # answered: zero bytes, because a Release build carries no DWARF. Keeping it around
+          # bought nothing and then broke the job outright, on
+          # "'casts.cc.o': invalid relocation offset" from one abseil object -- taking down the
+          # .NET check below, which is the only one that decides anything.
           {
             echo ""
             echo "| archive | bytes | linked wasm |"
             echo "|---|---|---|"
             echo "| as shipped | $asis | $wasm_asis |"
-            echo "| --strip-debug | $stripped | $wasm_stripped |"
-            echo ""
-            echo "Stripping debug info would save ${saved}% of the archive."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The check that matters, and the one that was missing. Everything above describes the
+      # archive; only .NET can say whether .NET can use it, and the two times this job tried to
+      # answer that with emcc flags it said yes while the real consumer said no. Three separate
+      # blockers were found by a person running a .NET publish by hand and none by this job:
+      # setjmp from turbojpeg, the wasm exception model, and non-trapping float-to-int.
+      #
+      # It also covers the step after linking. wasm-opt runs with a fixed feature list here, and
+      # an archive can link cleanly and still fail validation, which is exactly how
+      # -mnontrapping-fptoint surfaced.
+      - name: Setup .NET for the consumer check
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Install the wasm workload
+        run: dotnet workload install wasm-tools
+
+      - name: Publish a .NET wasm application against the archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dotnetcheck
+
+          # Named after the DllImport, not after what CMake produced. The module name comes from
+          # the file name, which is why the package renames it too.
+          cp build/lib/libCesiumNativeC.a dotnetcheck/CesiumNativeC.a
+
+          cat > dotnetcheck/Check.csproj <<'PROJ'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net10.0</TargetFramework>
+              <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+              <OutputType>Exe</OutputType>
+              <WasmMainJSPath>main.mjs</WasmMainJSPath>
+              <WasmBuildNative>true</WasmBuildNative>
+              <InvariantGlobalization>true</InvariantGlobalization>
+            </PropertyGroup>
+            <ItemGroup>
+              <NativeFileReference Include="CesiumNativeC.a" ScanForPInvokes="true" />
+            </ItemGroup>
+          </Project>
+          PROJ
+
+          cat > dotnetcheck/main.mjs <<'MJS'
+          import { dotnet } from './_framework/dotnet.js'
+          const { runMain } = await dotnet.create();
+          process.exit(await runMain());
+          MJS
+
+          cat > dotnetcheck/Program.cs <<'CS'
+          using System;
+          using System.Runtime.InteropServices;
+
+          internal static class Program
+          {
+              const string Lib = "CesiumNativeC";
+
+              [DllImport(Lib)] static extern IntPtr cesium_async_system_create();
+              [DllImport(Lib)] static extern void cesium_async_system_destroy(IntPtr h);
+              [DllImport(Lib)] static extern void cesium_async_system_dispatch_main_thread_tasks(IntPtr h);
+              [DllImport(Lib)] static extern IntPtr cesium_credit_system_create();
+              [DllImport(Lib)] static extern IntPtr cesium_asset_accessor_create_from_callbacks(IntPtr cb);
+              [DllImport(Lib)] static extern IntPtr cesium_tileset_externals_create(IntPtr a, IntPtr b, IntPtr c);
+              [DllImport(Lib)] static extern IntPtr cesium_tileset_options_create();
+              [DllImport(Lib)] static extern IntPtr cesium_tileset_create_from_url(IntPtr e, [MarshalAs(UnmanagedType.LPUTF8Str)] string url, IntPtr o);
+              [DllImport(Lib)] static extern IntPtr cesium_gltf_reader_create();
+
+              static int Main()
+              {
+                  // Calls rather than references, so the linker has to pull the members behind
+                  // them. cesium_tileset_create_from_url alone drags in most of cesium-native.
+                  IntPtr async = cesium_async_system_create();
+                  IntPtr credits = cesium_credit_system_create();
+                  IntPtr reader = cesium_gltf_reader_create();
+                  IntPtr options = cesium_tileset_options_create();
+
+                  var callbacks = new byte[64];
+                  GCHandle pin = GCHandle.Alloc(callbacks, GCHandleType.Pinned);
+                  IntPtr accessor = cesium_asset_accessor_create_from_callbacks(pin.AddrOfPinnedObject());
+                  IntPtr externals = cesium_tileset_externals_create(async, accessor, credits);
+                  IntPtr tileset = cesium_tileset_create_from_url(externals, "https://fake.test/t.json", options);
+                  cesium_async_system_dispatch_main_thread_tasks(async);
+                  pin.Free();
+
+                  bool ok = async != IntPtr.Zero && credits != IntPtr.Zero && reader != IntPtr.Zero
+                            && accessor != IntPtr.Zero && externals != IntPtr.Zero && tileset != IntPtr.Zero;
+
+                  Console.WriteLine($"async=0x{async:x} accessor=0x{accessor:x} tileset=0x{tileset:x}");
+                  cesium_async_system_destroy(async);
+                  Console.WriteLine(ok ? "PASS" : "FAIL");
+                  return ok ? 0 : 1;
+              }
+          }
+          CS
+
+          dotnet publish dotnetcheck/Check.csproj -c Release
+          node dotnetcheck/bin/Release/net10.0/browser-wasm/AppBundle/main.mjs
+          echo "a .NET wasm application linked this archive and ran it"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
