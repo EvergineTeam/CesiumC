@@ -373,6 +373,29 @@ jobs:
           CESIUM_ION_TOKEN: ""
         run: cmake --build build --target CesiumNativeCTests --parallel && ctest --test-dir build --output-on-failure --no-tests=error
 
+      # Counting symbol names as strings only means something for an archive whose members all
+      # reach the link, which is true of this one -- thirteen objects, all ours -- and false of
+      # the merged archive below, where most of the hundred and thirty-nine libraries contribute
+      # no member at all. So this check stays here, on our own code, and the merged archive is
+      # policed by an actual link instead.
+      - name: Verify our own objects are single-threaded and free of wasm exceptions
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=build/lib/libCesiumNativeC.a
+          test -f "$archive" || { echo "::error::$archive was not produced"; exit 1; }
+          echo "archive: $archive ($(stat -c%s "$archive") bytes)"
+          failed=0
+          for sym in __cpp_exception __wasm_lpad_context _Unwind_CallPersonality pthread_create; do
+            count=$(grep -ac "$sym" "$archive" || true)
+            printf '  %-26s %s\n' "$sym" "$count"
+            if [ "$count" != "0" ]; then
+              echo "::error::$archive references $sym; a .NET wasm app cannot link it as-is"
+              failed=1
+            fi
+          done
+          exit $failed
+
       # libCesiumNativeC.a on its own is not something a consumer can link. It holds the
       # thirteen objects of this wrapper and nothing else: cesium-native and every vcpkg
       # dependency are separate archives that CMake links at executable time, which is why the
@@ -432,33 +455,100 @@ jobs:
           # below, the upload, the release asset -- must see what a consumer will actually get.
           mv "$bundle" build/lib/libCesiumNativeC.a
 
-      # The check that says whether the archive is usable rather than merely built. ImGui.Net's
-      # cimgui.a and Evergine's ktx.a -- the natives that link into a .NET wasm app today --
-      # contain none of these symbols. A non-zero count means this archive demands the wasm
-      # exception runtime, and every consumer would have to enable -fwasm-exceptions to link it.
-      # An undefined symbol's name has to appear as a string in the object that needs it, which
-      # is what makes counting them meaningful without a symbol dumper on the runner.
-      #
-      # This runs after the merge on purpose. Checking the wrapper alone said nothing about the
-      # dependencies a consumer links, and those are built by vcpkg under a triplet we do not
-      # control line by line.
-      - name: Verify the archive is single-threaded and free of wasm exceptions
+      # Informative, not a gate. A dependency that mentions pthread_create only matters if the
+      # linker actually pulls the member that mentions it, and the link below is what answers
+      # that. Naming the libraries here is what turns "the bundle contains pthread_create" into
+      # something actionable.
+      - name: Report which dependencies mention threads
         shell: bash
         run: |
           set -euo pipefail
-          archive=build/lib/libCesiumNativeC.a
-          test -f "$archive" || { echo "::error::$archive was not produced"; exit 1; }
-          echo "archive: $archive ($(stat -c%s "$archive") bytes)"
-          failed=0
-          for sym in __cpp_exception __wasm_lpad_context _Unwind_CallPersonality pthread_create; do
-            count=$(grep -ac "$sym" "$archive" || true)
-            printf '  %-26s %s\n' "$sym" "$count"
-            if [ "$count" != "0" ]; then
-              echo "::error::$archive references $sym; a .NET wasm app cannot link it as-is"
-              failed=1
+          found=0
+          while read -r a; do
+            n=$(grep -ac pthread_create "$a" || true)
+            if [ "$n" != "0" ]; then
+              printf '  %-70s %s\n' "$a" "$n"
+              found=$((found + 1))
             fi
-          done
-          exit $failed
+          done < archives.txt
+          if [ "$found" = "0" ]; then
+            echo "  no dependency mentions pthread_create"
+          else
+            echo "$found archive(s) mention pthread_create; the link below decides whether it matters"
+          fi
+
+      # The gate. Everything before this says what is inside the archive; only a link says
+      # whether a consumer can use it.
+      #
+      # The program is built as C++ so emcc links the C++ runtime the archive needs, and calls
+      # real entry points rather than merely naming them, so the linker has to pull the members
+      # behind them -- cesium_tileset_create_from_url alone drags in most of cesium-native. No
+      # -pthread and no -fwasm-exceptions, because that is how .NET links browser-wasm, and an
+      # archive that needs either is one no .NET app can consume.
+      - name: Link a consumer against the archive alone
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emcc="$EMSDK/upstream/emscripten/emcc.bat"
+          if [ ! -f "$emcc" ]; then
+            emcc="$EMSDK/upstream/emscripten/emcc"
+          fi
+          test -f "$emcc" || { echo "::error::no emcc found under $EMSDK/upstream/emscripten"; exit 1; }
+          echo "using $emcc"
+
+          mkdir -p linkcheck
+          cat > linkcheck/consumer.cpp <<'CONSUMER'
+          #include <cesium/cesium_common.h>
+          #include <cesium/cesium_tileset.h>
+          #include <cesium/cesium_gltf.h>
+          #include <cesium/cesium_ion.h>
+
+          int main() {
+              CesiumAsyncSystem* async = cesium_async_system_create();
+              CesiumAssetAccessorCallbacks cb{};
+              CesiumAssetAccessor* accessor = cesium_asset_accessor_create_from_callbacks(&cb);
+              CesiumCreditSystem* credits = cesium_credit_system_create();
+              CesiumTilesetExternals* externals =
+                  cesium_tileset_externals_create(async, accessor, credits);
+
+              CesiumTilesetOptions* options = cesium_tileset_options_create();
+              CesiumTileset* tileset =
+                  cesium_tileset_create_from_url(externals, "https://example.invalid/t.json", options);
+              cesium_async_system_dispatch_main_thread_tasks(async);
+
+              CesiumCGltfReader* reader = cesium_gltf_reader_create();
+              cesium_gltf_reader_destroy(reader);
+
+              cesium_tileset_destroy(tileset);
+              cesium_tileset_options_destroy(options);
+              cesium_tileset_externals_destroy(externals);
+              cesium_credit_system_destroy(credits);
+              cesium_asset_accessor_destroy(accessor);
+              cesium_async_system_destroy(async);
+              return 0;
+          }
+          CONSUMER
+
+          "$emcc" linkcheck/consumer.cpp build/lib/libCesiumNativeC.a \
+            -I include \
+            -o linkcheck/consumer.js \
+            2>&1 | tee linkcheck/link.log
+
+          test -f linkcheck/consumer.wasm || { echo "::error::the link produced no wasm module"; exit 1; }
+          echo "linked: $(stat -c%s linkcheck/consumer.wasm) bytes of wasm from a $(stat -c%s build/lib/libCesiumNativeC.a) byte archive"
+
+          # A consumer that links but dies on the first call would be a worse lie than one that
+          # does not link, so run it.
+          "$EMSDK_NODE" linkcheck/consumer.js
+          echo "the consumer ran"
+
+          {
+            echo ""
+            echo "| link check | |"
+            echo "|---|---|"
+            echo "| wasm produced | $(stat -c%s linkcheck/consumer.wasm) bytes |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
