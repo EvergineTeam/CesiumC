@@ -351,9 +351,13 @@ jobs:
         env:
           # vcpkg does not hand its whole environment to the processes it spawns; it passes a
           # fixed list and drops the rest. EMSDK is not on that list, so the overlay triplet --
-          # which needs it to locate the Emscripten toolchain -- saw nothing and stopped. This
-          # is the documented way to widen the list.
-          VCPKG_KEEP_ENV_VARS: EMSDK;EMSCRIPTEN_ROOT;EMSDK_NODE;EMSDK_PYTHON
+          # which needs it to locate the Emscripten toolchain -- saw nothing and stopped.
+          #
+          # EMSCRIPTEN is here because this variable REPLACES vcpkg's default list rather than
+          # extending it. Naming only what the triplet needed dropped EMSCRIPTEN, which had been
+          # arriving on its own, and draco then failed to build with "The EMSCRIPTEN environment
+          # variable must be set". Anything the ports rely on has to be listed here too.
+          VCPKG_KEEP_ENV_VARS: EMSDK;EMSCRIPTEN;EMSCRIPTEN_ROOT;EMSDK_NODE;EMSDK_PYTHON;EM_CONFIG;EM_CACHE
         run: |
           $emscriptenToolchain = "$env:EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
           if (-not (Test-Path $emscriptenToolchain)) {
