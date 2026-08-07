@@ -388,8 +388,24 @@ CESIUM_API int cesium_asset_request_fail(
     const char* message);
 
 /**
- * @brief Cancels and fails every request in flight on this accessor. Destroying the accessor
- *        does this automatically.
+ * @brief Cancels and fails every request in flight on this accessor.
+ *
+ * Each cancelled request gets its cancelRequest callback and is failed with status 0, and its
+ * id becomes inert -- completing it afterwards returns 0 rather than reaching a tileset that
+ * has moved on.
+ *
+ * @warning Call this when the host stops answering. Do not rely on destruction to do it.
+ *
+ * The accessor's destructor does cancel, but it cannot help in the case that matters. An
+ * unanswered request leaves a continuation pending inside cesium-native; that continuation
+ * holds a copy of TilesetExternals, and TilesetExternals holds this accessor. So while any
+ * request is outstanding the accessor cannot be destroyed, and the cancellation in its
+ * destructor cannot run. Destroying every handle you own is not enough -- measured, not
+ * assumed, in test_host_accessor_never_answered_is_released.
+ *
+ * There is no timeout. Adding one would mean this library owns a clock and decides how long
+ * a host is allowed to take, which is the host's call. Use
+ * cesium_asset_accessor_get_pending_request_count to notice a host that has gone quiet.
  */
 CESIUM_API void cesium_asset_accessor_cancel_all_requests(CesiumAssetAccessor* accessor);
 

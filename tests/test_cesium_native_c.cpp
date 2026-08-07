@@ -2265,24 +2265,35 @@ static int test_host_accessor_never_answered_is_released() {
         cesium_view_state_destroy(vs);
         cesium_tileset_destroy(tileset);
 
-        /* Pump before tearing the rest down. cesium-native's Tileset destroys itself
-           asynchronously and holds TilesetExternals -- and through it the accessor -- until
-           that completes, so without this the accessor outlives the scope and neither
-           cancelRequest nor destroy has fired yet. A host pumps every frame anyway; the
-           first version of this test simply assumed teardown was synchronous. */
         for (int i = 0; i < 50; ++i) {
             cesium_async_system_dispatch_main_thread_tasks(f.async);
         }
+
+        /* Cancelling explicitly is not tidiness here, it is the only way out, and this test
+           exists to pin that down.
+
+           Destroying the handles is not enough. An unanswered request leaves a continuation
+           pending inside cesium-native, that continuation holds a copy of TilesetExternals,
+           and TilesetExternals holds the accessor -- so the accessor cannot be destroyed
+           while a request is outstanding. Which means its destructor, where cancellation
+           lives, can never fire in exactly the situation it was written for. The first
+           version of this test asserted the opposite and was wrong: measured here, after
+           tearing everything down and pumping a hundred times, cancelRequest had not been
+           called once and the stranded id was still live in the registry.
+
+           So a host that stops answering must say so. There is no timeout, by choice: a
+           timeout would mean this library owns a clock. */
+        cesium_asset_accessor_cancel_all_requests(f.accessor);
+        ASSERT_EQ(host.cancelCalls, 1);
+        ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(f.accessor), 0);
 
         cesium_tileset_options_destroy(options);
+        /* No pumping after this: f.destroy() takes the async system with it, so dispatching
+           on f.async afterwards reads a destroyed object. */
         f.destroy();
-
-        for (int i = 0; i < 50; ++i) {
-            cesium_async_system_dispatch_main_thread_tasks(f.async);
-        }
     }
 
-    /* Teardown cancels what the host never answered, then tells it the accessor is gone. */
+    /* Cancelling resolved the promise, so nothing holds the accessor now and destroy fires. */
     ASSERT_EQ(host.cancelCalls, 1);
     ASSERT_EQ(host.destroyCalls, 1);
 
@@ -2319,6 +2330,11 @@ static int test_host_accessor_completed_after_everything_destroyed() {
         for (int i = 0; i < 50; ++i) {
             cesium_async_system_dispatch_main_thread_tasks(f.async);
         }
+        /* Retire the id before tearing down, for the reason spelled out in
+           test_host_accessor_never_answered_is_released: an outstanding request keeps the
+           accessor alive, so without this the id would still be live below and the late
+           completion would find it. */
+        cesium_asset_accessor_cancel_all_requests(f.accessor);
         cesium_tileset_options_destroy(options);
         f.destroy();   /* the async system goes too */
     }
@@ -2488,8 +2504,16 @@ static int test_ion_async_returns_before_the_host_answers() {
     cesium_ion_connection_create_async(
         f.async, f.accessor, "fake-token", "https://fake.test", ionAsyncComplete, &r);
 
+    /* Returned without reporting. That is the whole claim: the blocking form would still be
+       inside its fifty-second loop at this point. */
     ASSERT_EQ(r.calls, 0);
+
+    /* The request itself has not reached the host yet either, because beginRequest is
+       marshalled to the main thread by default. One dispatch delivers it. */
+    ASSERT_EQ(host.beginCalls, 0);
+    cesium_async_system_dispatch_main_thread_tasks(f.async);
     ASSERT_EQ(host.beginCalls, 1);
+    ASSERT_EQ(r.calls, 0);
     ASSERT_TRUE(std::strstr(host.lastUrl, "/appData") != nullptr);
 
     /* Now let it finish: answer, then dispatch, which is where the callback runs. */
@@ -2517,6 +2541,12 @@ static int test_ion_async_reports_http_failure() {
 
     cesium_ion_connection_create_async(
         f.async, f.accessor, "fake-token", "https://fake.test", ionAsyncComplete, &r);
+
+    /* Deliver the request first. Pumping the host before this would find nothing queued,
+       because beginRequest is marshalled. */
+    cesium_async_system_dispatch_main_thread_tasks(f.async);
+    ASSERT_EQ(host.beginCalls, 1);
+
     fakeHostPump(&host);
     ASSERT_TRUE(dispatchUntilReported(f, &r));
 
