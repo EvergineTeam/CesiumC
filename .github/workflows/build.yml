@@ -431,7 +431,19 @@ jobs:
           # Git Bash, so an absolute $PWD reaches it as /d/a/... and it answers "no such file
           # or directory". The paths find produces are relative already, which it accepts.
           bundle="build/lib/libCesiumNativeC-bundle.a"
-          find build -name '*.a' ! -path '*/libCesiumNativeC-bundle.a' | sort -u > archives.txt
+
+          # vcpkg installs each port twice, release under lib/ and debug under debug/lib/, and
+          # a plain find takes both: 257 archives instead of 139, and 340 MB instead of 55. It
+          # went unnoticed while the ports came from the binary cache, which does not
+          # materialise the debug tree. Shipping both would also put two builds of the same
+          # library in one archive and leave the consumer's linker to pick.
+          find build -name '*.a' ! -path '*/debug/*' ! -path '*/libCesiumNativeC-bundle.a' \
+            | sort -u > archives.txt
+          if grep -q '/debug/' archives.txt; then
+            echo "::error::the debug tree reached the merge list; the exclusion above no longer matches the layout"
+            grep '/debug/' archives.txt
+            exit 1
+          fi
           count=$(wc -l < archives.txt)
           if [ "$count" -lt 2 ]; then
             echo "::error::found only $count archive(s); the dependency libraries are not where this expects them"
@@ -577,30 +589,16 @@ jobs:
           wasm_asis=$(link_against build/lib/libCesiumNativeC.a asis | tail -1)
           echo "as shipped: archive $asis -> wasm $wasm_asis, and it ran"
 
-          # Measurement only, so the choice about package size is made on numbers rather than
-          # on the assumption that debug info dominates. Linking it too, because a size that
-          # comes with a broken archive is not a saving.
-          strip="$EMSDK/upstream/bin/llvm-strip"
-          if [ -x "$strip" ]; then
-            cp build/lib/libCesiumNativeC.a linkcheck/stripped.a
-            "$strip" --strip-debug linkcheck/stripped.a
-            stripped=$(stat -c%s linkcheck/stripped.a)
-            wasm_stripped=$(link_against linkcheck/stripped.a stripped | tail -1)
-            echo "stripped:   archive $stripped -> wasm $wasm_stripped, and it ran"
-            saved=$(( 100 - (stripped * 100 / asis) ))
-          else
-            echo "llvm-strip not found, skipping the measurement"
-            stripped=0; wasm_stripped=0; saved=0
-          fi
-
+          # The --strip-debug measurement that used to live here is gone. It was asked once and
+          # answered: zero bytes, because a Release build carries no DWARF. Keeping it around
+          # bought nothing and then broke the job outright, on
+          # "'casts.cc.o': invalid relocation offset" from one abseil object -- taking down the
+          # .NET check below, which is the only one that decides anything.
           {
             echo ""
             echo "| archive | bytes | linked wasm |"
             echo "|---|---|---|"
             echo "| as shipped | $asis | $wasm_asis |"
-            echo "| --strip-debug | $stripped | $wasm_stripped |"
-            echo ""
-            echo "Stripping debug info would save ${saved}% of the archive."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # The check that matters, and the one that was missing. Everything above describes the
