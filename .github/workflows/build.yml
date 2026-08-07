@@ -373,12 +373,72 @@ jobs:
           CESIUM_ION_TOKEN: ""
         run: cmake --build build --target CesiumNativeCTests --parallel && ctest --test-dir build --output-on-failure --no-tests=error
 
+      # libCesiumNativeC.a on its own is not something a consumer can link. It holds the
+      # thirteen objects of this wrapper and nothing else: cesium-native and every vcpkg
+      # dependency are separate archives that CMake links at executable time, which is why the
+      # tests above pass while the published asset does not work. On desktop that is invisible,
+      # because the shared library resolves its own dependencies -- Windows ships nineteen DLLs
+      # alongside, macOS links everything into one dylib. browser-wasm has no dynamic loading
+      # at all, so whatever the package ships has to be self-contained or the consumer's link
+      # fails with thousands of undefined symbols.
+      #
+      # Merging is done with llvm-ar's MRI script rather than emar, because emar on the Windows
+      # runner is a batch wrapper and this step runs under bash.
+      - name: Bundle every static library into one linkable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ar="$EMSDK/upstream/bin/llvm-ar"
+          test -x "$ar" || { echo "::error::llvm-ar not found at $ar"; exit 1; }
+
+          bundle="$PWD/build/lib/libCesiumNativeC-bundle.a"
+          find build -name '*.a' ! -path '*/libCesiumNativeC-bundle.a' | sort -u > archives.txt
+          count=$(wc -l < archives.txt)
+          if [ "$count" -lt 2 ]; then
+            echo "::error::found only $count archive(s); the dependency libraries are not where this expects them"
+            cat archives.txt
+            exit 1
+          fi
+
+          echo "merging $count archives:"
+          awk '{ printf "  %s\n", $0 }' archives.txt
+
+          {
+            echo "create $bundle"
+            while read -r a; do echo "addlib $a"; done < archives.txt
+            echo "save"
+            echo "end"
+          } > merge.mri
+          "$ar" -M < merge.mri
+
+          test -f "$bundle" || { echo "::error::the merge produced no archive"; exit 1; }
+          before=$(stat -c%s build/lib/libCesiumNativeC.a)
+          after=$(stat -c%s "$bundle")
+          echo "wrapper only: $before bytes"
+          echo "bundled:      $after bytes  (from $count archives)"
+          {
+            echo "### browser-wasm archive"
+            echo ""
+            echo "| | bytes |"
+            echo "|---|---|"
+            echo "| wrapper only | $before |"
+            echo "| bundled from $count archives | $after |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # From here on the bundle is the archive. Everything downstream -- the symbol checks
+          # below, the upload, the release asset -- must see what a consumer will actually get.
+          mv "$bundle" build/lib/libCesiumNativeC.a
+
       # The check that says whether the archive is usable rather than merely built. ImGui.Net's
       # cimgui.a and Evergine's ktx.a -- the natives that link into a .NET wasm app today --
       # contain none of these symbols. A non-zero count means this archive demands the wasm
       # exception runtime, and every consumer would have to enable -fwasm-exceptions to link it.
       # An undefined symbol's name has to appear as a string in the object that needs it, which
       # is what makes counting them meaningful without a symbol dumper on the runner.
+      #
+      # This runs after the merge on purpose. Checking the wrapper alone said nothing about the
+      # dependencies a consumer links, and those are built by vcpkg under a triplet we do not
+      # control line by line.
       - name: Verify the archive is single-threaded and free of wasm exceptions
         shell: bash
         run: |
