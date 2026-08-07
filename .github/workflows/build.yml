@@ -391,7 +391,10 @@ jobs:
           ar="$EMSDK/upstream/bin/llvm-ar"
           test -x "$ar" || { echo "::error::llvm-ar not found at $ar"; exit 1; }
 
-          bundle="$PWD/build/lib/libCesiumNativeC-bundle.a"
+          # Relative, deliberately. llvm-ar is a native Windows binary and this step runs in
+          # Git Bash, so an absolute $PWD reaches it as /d/a/... and it answers "no such file
+          # or directory". The paths find produces are relative already, which it accepts.
+          bundle="build/lib/libCesiumNativeC-bundle.a"
           find build -name '*.a' ! -path '*/libCesiumNativeC-bundle.a' | sort -u > archives.txt
           count=$(wc -l < archives.txt)
           if [ "$count" -lt 2 ]; then
