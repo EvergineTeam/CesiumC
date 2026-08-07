@@ -2287,6 +2287,14 @@ static int test_host_accessor_never_answered_is_released() {
         ASSERT_EQ(host.cancelCalls, 1);
         ASSERT_EQ(cesium_asset_accessor_get_pending_request_count(f.accessor), 0);
 
+        /* Cancelling resolves the promise, but resolution is marshalled like everything else
+           here, so the continuation holding TilesetExternals only lets go once it actually
+           runs. Pump while the async system is still alive -- after f.destroy() there is
+           nothing left to pump, and the reference would never be released. */
+        for (int i = 0; i < 50; ++i) {
+            cesium_async_system_dispatch_main_thread_tasks(f.async);
+        }
+
         cesium_tileset_options_destroy(options);
         /* No pumping after this: f.destroy() takes the async system with it, so dispatching
            on f.async afterwards reads a destroyed object. */

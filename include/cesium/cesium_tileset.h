@@ -406,6 +406,11 @@ CESIUM_API int cesium_asset_request_fail(
  * There is no timeout. Adding one would mean this library owns a clock and decides how long
  * a host is allowed to take, which is the host's call. Use
  * cesium_asset_accessor_get_pending_request_count to notice a host that has gone quiet.
+ *
+ * @note Keep dispatching after this returns, and before you tear the async system down.
+ * Cancelling resolves each promise, but resolution is marshalled to the main thread like
+ * every other completion, so the continuations that hold the accessor only let go once they
+ * run. Cancel, pump, then destroy.
  */
 CESIUM_API void cesium_asset_accessor_cancel_all_requests(CesiumAssetAccessor* accessor);
 
