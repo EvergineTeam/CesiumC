@@ -346,44 +346,29 @@ jobs:
       # Emscripten CI never meets it. blend2d[core] does build for wasm; the Supports field is a
       # blanket statement about the port including its jit feature, and cesium-native asks for
       # [core] precisely because wasm has no jit.
+      # No overlay triplet and no ABI flags here, deliberately. Both were attempts to force the
+      # vcpkg ports onto the wasm exception and setjmp models, and neither was needed: the only
+      # setjmp in the whole archive came from turbojpeg, which CESIUM_DISABLE_LIBJPEG_TURBO
+      # removes. The overlay triplet cost two runs of its own, because it replaces vcpkg's
+      # community triplet rather than extending it and silently dropped what that one did.
       - name: CMake configure
         shell: pwsh
-        env:
-          # vcpkg does not hand its whole environment to the processes it spawns; it passes a
-          # fixed list and drops the rest. EMSDK is not on that list, so the overlay triplet --
-          # which needs it to locate the Emscripten toolchain -- saw nothing and stopped.
-          #
-          # EMSCRIPTEN is here because this variable REPLACES vcpkg's default list rather than
-          # extending it. Naming only what the triplet needed dropped EMSCRIPTEN, which had been
-          # arriving on its own, and draco then failed to build with "The EMSCRIPTEN environment
-          # variable must be set". Anything the ports rely on has to be listed here too.
-          VCPKG_KEEP_ENV_VARS: EMSDK;EMSCRIPTEN;EMSCRIPTEN_ROOT;EMSDK_NODE;EMSDK_PYTHON;EM_CONFIG;EM_CACHE
         run: |
           $emscriptenToolchain = "$env:EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
           if (-not (Test-Path $emscriptenToolchain)) {
             throw "Emscripten toolchain not found at $emscriptenToolchain"
           }
-
-          # setup-emsdk exports EMSDK, EMSDK_NODE and EMSDK_PYTHON, and no EMSCRIPTEN. Draco's
-          # build insists on that one, and until now never said so: it was being restored from
-          # vcpkg's binary cache on every run. Changing the triplet changed the ABI hash, the
-          # cache stopped matching, and draco had to be compiled for the first time in this
-          # workflow's life -- which is when a latent requirement of its build surfaced.
-          #
-          # Nothing to do with the wasm ABI work; it was simply never exercised before.
-          $env:EMSCRIPTEN = "$env:EMSDK/upstream/emscripten"
-          Write-Host "EMSCRIPTEN=$env:EMSCRIPTEN"
           cmake -S . -B build `
             -G Ninja `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$emscriptenToolchain" `
             -DVCPKG_TARGET_TRIPLET=wasm32-emscripten `
-            -DVCPKG_OVERLAY_TRIPLETS="$PWD/triplets" `
             -DVCPKG_INSTALL_OPTIONS=--allow-unsupported `
             -DCMAKE_CROSSCOMPILING_EMULATOR="$env:EMSDK_NODE" `
             -DCESIUM_WASM_SHARED_MEMORY=OFF `
-            -DCMAKE_CXX_FLAGS="-DSIZEOF_SIZE_T=4 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm" `
-            -DCMAKE_C_FLAGS="-DSIZEOF_SIZE_T=4 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm" `
+            -DCESIUM_WASM_NONTRAPPING_FPTOINT=OFF `
+            -DCMAKE_CXX_FLAGS=-DSIZEOF_SIZE_T=4 `
+            -DCMAKE_C_FLAGS=-DSIZEOF_SIZE_T=4 `
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
 
       - name: CMake build
@@ -573,19 +558,12 @@ jobs:
             local archive="$1" tag="$2"
             rm -rf "linkcheck/$tag"
             mkdir -p "linkcheck/$tag"
-            # These two flags are not decoration. Plain emcc defaults to JS exceptions and the
-            # JS setjmp model, so this link once succeeded while the first real .NET consumer
-            # failed on "undefined symbol: emscripten_longjmp". A check that does not use the
-            # consumer's settings only ever agrees with itself.
-            #
-            # What .NET actually does, read off its own link line and confirmed by linking a
-            # throwing archive into a .NET wasm application and running it: wasm exceptions,
-            # and no thread support. It does not resolve setjmp in either model, which is why
-            # the diagnostic above names any dependency that uses one.
+            # Plain emcc, no ABI flags. This check cannot be made faithful to .NET by guessing
+            # flags -- it was tried, twice, and both times it agreed with itself while the real
+            # consumer failed. The faithful check is the .NET publish further down; this one is
+            # only here to catch an archive that is missing symbols outright.
             "$emcc" linkcheck/consumer.cpp "$archive" \
               -I include \
-              -fwasm-exceptions \
-              -sSUPPORT_LONGJMP=wasm \
               -o "linkcheck/$tag/consumer.js" \
               2>&1 | tee "linkcheck/$tag.log"
             test -f "linkcheck/$tag/consumer.wasm" || {
@@ -624,6 +602,105 @@ jobs:
             echo ""
             echo "Stripping debug info would save ${saved}% of the archive."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The check that matters, and the one that was missing. Everything above describes the
+      # archive; only .NET can say whether .NET can use it, and the two times this job tried to
+      # answer that with emcc flags it said yes while the real consumer said no. Three separate
+      # blockers were found by a person running a .NET publish by hand and none by this job:
+      # setjmp from turbojpeg, the wasm exception model, and non-trapping float-to-int.
+      #
+      # It also covers the step after linking. wasm-opt runs with a fixed feature list here, and
+      # an archive can link cleanly and still fail validation, which is exactly how
+      # -mnontrapping-fptoint surfaced.
+      - name: Setup .NET for the consumer check
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Install the wasm workload
+        run: dotnet workload install wasm-tools
+
+      - name: Publish a .NET wasm application against the archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dotnetcheck
+
+          # Named after the DllImport, not after what CMake produced. The module name comes from
+          # the file name, which is why the package renames it too.
+          cp build/lib/libCesiumNativeC.a dotnetcheck/CesiumNativeC.a
+
+          cat > dotnetcheck/Check.csproj <<'PROJ'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net10.0</TargetFramework>
+              <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+              <OutputType>Exe</OutputType>
+              <WasmMainJSPath>main.mjs</WasmMainJSPath>
+              <WasmBuildNative>true</WasmBuildNative>
+              <InvariantGlobalization>true</InvariantGlobalization>
+            </PropertyGroup>
+            <ItemGroup>
+              <NativeFileReference Include="CesiumNativeC.a" ScanForPInvokes="true" />
+            </ItemGroup>
+          </Project>
+          PROJ
+
+          cat > dotnetcheck/main.mjs <<'MJS'
+          import { dotnet } from './_framework/dotnet.js'
+          const { runMain } = await dotnet.create();
+          process.exit(await runMain());
+          MJS
+
+          cat > dotnetcheck/Program.cs <<'CS'
+          using System;
+          using System.Runtime.InteropServices;
+
+          internal static class Program
+          {
+              const string Lib = "CesiumNativeC";
+
+              [DllImport(Lib)] static extern IntPtr cesium_async_system_create();
+              [DllImport(Lib)] static extern void cesium_async_system_destroy(IntPtr h);
+              [DllImport(Lib)] static extern void cesium_async_system_dispatch_main_thread_tasks(IntPtr h);
+              [DllImport(Lib)] static extern IntPtr cesium_credit_system_create();
+              [DllImport(Lib)] static extern IntPtr cesium_asset_accessor_create_from_callbacks(IntPtr cb);
+              [DllImport(Lib)] static extern IntPtr cesium_tileset_externals_create(IntPtr a, IntPtr b, IntPtr c);
+              [DllImport(Lib)] static extern IntPtr cesium_tileset_options_create();
+              [DllImport(Lib)] static extern IntPtr cesium_tileset_create_from_url(IntPtr e, [MarshalAs(UnmanagedType.LPUTF8Str)] string url, IntPtr o);
+              [DllImport(Lib)] static extern IntPtr cesium_gltf_reader_create();
+
+              static int Main()
+              {
+                  // Calls rather than references, so the linker has to pull the members behind
+                  // them. cesium_tileset_create_from_url alone drags in most of cesium-native.
+                  IntPtr async = cesium_async_system_create();
+                  IntPtr credits = cesium_credit_system_create();
+                  IntPtr reader = cesium_gltf_reader_create();
+                  IntPtr options = cesium_tileset_options_create();
+
+                  var callbacks = new byte[64];
+                  GCHandle pin = GCHandle.Alloc(callbacks, GCHandleType.Pinned);
+                  IntPtr accessor = cesium_asset_accessor_create_from_callbacks(pin.AddrOfPinnedObject());
+                  IntPtr externals = cesium_tileset_externals_create(async, accessor, credits);
+                  IntPtr tileset = cesium_tileset_create_from_url(externals, "https://fake.test/t.json", options);
+                  cesium_async_system_dispatch_main_thread_tasks(async);
+                  pin.Free();
+
+                  bool ok = async != IntPtr.Zero && credits != IntPtr.Zero && reader != IntPtr.Zero
+                            && accessor != IntPtr.Zero && externals != IntPtr.Zero && tileset != IntPtr.Zero;
+
+                  Console.WriteLine($"async=0x{async:x} accessor=0x{accessor:x} tileset=0x{tileset:x}");
+                  cesium_async_system_destroy(async);
+                  Console.WriteLine(ok ? "PASS" : "FAIL");
+                  return ok ? 0 : 1;
+              }
+          }
+          CS
+
+          dotnet publish dotnetcheck/Check.csproj -c Release
+          node dotnetcheck/bin/Release/net10.0/browser-wasm/AppBundle/main.mjs
+          echo "a .NET wasm application linked this archive and ran it"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

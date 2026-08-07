@@ -32,9 +32,21 @@ set(CESIUM_TESTS_ENABLED OFF CACHE BOOL "" FORCE)
 # Reading upstream's option rather than testing EMSCRIPTEN at every site also keeps
 # -DCESIUM_DISABLE_CURL=ON working on a native platform, which is a configuration upstream
 # deliberately offers.
+#   CESIUM_DISABLE_LIBJPEG_TURBO turbojpeg uses setjmp for its error handling, and setjmp is not
+#                       linkable from a .NET wasm application in any form. WebAssembly has no
+#                       setjmp, so it has to be emulated, and of the two models .NET provides
+#                       neither: not emscripten_longjmp, which is an import from the JavaScript
+#                       glue, and not __wasm_setjmp with its support library. Measured by
+#                       linking a real .NET wasm application against the published archive: the
+#                       only setjmp among its 2409 objects came from turbojpeg.c.o, and removing
+#                       it left the link with no undefined symbols at all.
+#
+#                       JPEG is not lost. ImageDecoder falls through to stb_image, which decodes
+#                       it too, only slower. The cost is decode speed on wasm and nothing else.
 if(EMSCRIPTEN)
     set(CESIUM_TARGET_WASM ON)
     set(CESIUM_DISABLE_CURL ON)
+    set(CESIUM_DISABLE_LIBJPEG_TURBO ON)
 endif()
 
 # Printed rather than left to be inferred. Getting a cross build wrong is quiet: the
@@ -46,7 +58,8 @@ message(STATUS "CesiumNativeC: system=${CMAKE_SYSTEM_NAME} "
                "pointer=${CMAKE_SIZEOF_VOID_P} bytes "
                "EMSCRIPTEN=${EMSCRIPTEN} "
                "CESIUM_TARGET_WASM=${CESIUM_TARGET_WASM} "
-               "CESIUM_DISABLE_CURL=${CESIUM_DISABLE_CURL}")
+               "CESIUM_DISABLE_CURL=${CESIUM_DISABLE_CURL} "
+               "CESIUM_DISABLE_LIBJPEG_TURBO=${CESIUM_DISABLE_LIBJPEG_TURBO}")
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/cesium-native
                  ${CMAKE_CURRENT_BINARY_DIR}/cesium-native
