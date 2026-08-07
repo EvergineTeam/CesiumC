@@ -2290,9 +2290,18 @@ static int test_host_accessor_never_answered_is_released() {
         /* Cancelling resolves the promise, but resolution is marshalled like everything else
            here, so the continuation holding TilesetExternals only lets go once it actually
            runs. Pump while the async system is still alive -- after f.destroy() there is
-           nothing left to pump, and the reference would never be released. */
+           nothing left to pump, and the reference would never be released.
+
+           The sleep is the same lesson as pumpUntilRootTile, learned again: on a threaded
+           build part of this teardown lands on a worker, and fifty dispatches with nothing
+           between them are over in microseconds, long before that worker has run. This loop
+           without the sleep passed on browser-wasm, where the pump is the only thread, and
+           failed on all four threaded legs. */
         for (int i = 0; i < 50; ++i) {
             cesium_async_system_dispatch_main_thread_tasks(f.async);
+#if !(defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__))
+            sleep_ms(5);
+#endif
         }
 
         cesium_tileset_options_destroy(options);
