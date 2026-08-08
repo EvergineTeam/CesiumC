@@ -171,6 +171,14 @@ jobs:
           # needs is an archive to link -- the same shape as browser-wasm and for a different
           # reason. CMakeLists.txt carries that rule.
           #
+          # 14.0 and not lower, and it is the code that decides. ThreadPoolTaskProcessor in
+          # src/cesium_async.cpp uses C++20 atomic waits, and Apple marks std::atomic::wait,
+          # notify_one and notify_all as introduced in iOS 14.0 -- at 13.0 the leg fails on three
+          # lines of that one file. JoltPhysicsC builds for iOS 12.0 because its sources never
+          # reach that API. Rewriting the pool around a condition_variable would buy a lower
+          # floor by changing code that works on five platforms, for a version of iOS nobody
+          # ships to.
+          #
           # Two rows rather than one, and the simulator is not there for symmetry: a simulator
           # build needs no signing certificate and a device build does, so it is the only one of
           # the two that CI can put in front of a real .NET application without secrets.
@@ -193,7 +201,7 @@ jobs:
             extra-cmake: >-
               -DCMAKE_SYSTEM_NAME=iOS
               -DCMAKE_OSX_SYSROOT=iphoneos
-              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
             build-target: "--target CesiumNativeC"
 
           - os: macos-14
@@ -210,7 +218,7 @@ jobs:
             extra-cmake: >-
               -DCMAKE_SYSTEM_NAME=iOS
               -DCMAKE_OSX_SYSROOT=iphonesimulator
-              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
             build-target: "--target CesiumNativeC"
 
           # Intel macOS was built here until 2026-08-08 and is not any more. Apple stopped
