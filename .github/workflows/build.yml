@@ -286,6 +286,37 @@ jobs:
       - name: CMake build
         run: cmake --build build --config ${{ env.CMAKE_BUILD_TYPE }} --parallel
 
+      # The NDK keeps debug info where the desktop toolchains do not, and it is not a rounding
+      # error. Measured on the first green android run: 251.5 MB, of which 223.7 MB is .debug_*
+      # sections. What is left is 20.7 MB, slightly under linux-x64's own 25.5 MB, so the library
+      # was never the problem -- but this one goes inside every APK that uses the package, and
+      # 251 MB of it would not.
+      #
+      # --strip-debug and not --strip-all, deliberately. The coherence checks downstream read
+      # exported symbols out of the library; dropping .symtab as well would save a further 7 MB
+      # and put a check at risk for a rounding error.
+      - name: Strip debug info
+        if: matrix.rid == 'android-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib=build/bin/libCesiumNativeC.so
+          strip="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          [ -x "$strip" ] || { echo "::error::no llvm-strip at $strip"; exit 1; }
+
+          before=$(stat -c%s "$lib")
+          "$strip" --strip-debug "$lib"
+          after=$(stat -c%s "$lib")
+          awk -v b="$before" -v a="$after" 'BEGIN{printf "  %.1f MB -> %.1f MB\n", b/1e6, a/1e6}'
+
+          # A guard rather than a print. If a future NDK stops emitting debug info, or the strip
+          # silently does nothing, this is the difference between noticing and shipping a
+          # quarter of a gigabyte into somebody's application.
+          if [ "$after" -gt 60000000 ]; then
+            echo "::error::still $((after / 1000000)) MB after stripping; expected around 28"
+            exit 1
+          fi
+
       # ---- Test ----
 
       - name: Run tests
