@@ -42,6 +42,15 @@ upstream:
       path: cesium-native
       format: c-header
 
+# Repositories told directly when a release is cut here, instead of finding out from their own
+# monthly cron -- which fires the day *before* this repository's porter agent runs, so a version
+# took two months to reach a NuGet package rather than one.
+#
+# Declared here rather than in the workflow because who consumes this wrapper is a fact about the
+# project, not about how CI happens to be wired this month.
+downstream:
+  - repo: EvergineTeam/Cesium.NET
+
 # NOTE — CESIUMC_CESIUM_NATIVE_VERSION in include/cesium/cesium_common.h must agree with
 # release.current. It is the only version statement a consumer can read without cloning this
 # repository, and Cesium.NET has no other way to say which Cesium it binds to. Nothing checks

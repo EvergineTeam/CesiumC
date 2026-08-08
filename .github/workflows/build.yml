@@ -822,9 +822,23 @@ jobs:
             `runtimes/<rid>/native/`, so unpacking it over a .NET binding repository puts the
             library where the package expects it.
 
-            `browser-wasm` is a static archive built without `-pthread` and without
-            `-fwasm-exceptions`, which is what .NET's browser-wasm can link. Its HTTP accessor
-            is a placeholder that fails every request; a `fetch`-based one is still to be
-            written.
+            `browser-wasm` is a single static archive with cesium-native and its dependencies
+            merged in, built without `-pthread` and without `-mnontrapping-fptoint`, which is
+            what .NET's browser-wasm can link. It carries no `setjmp`, which .NET resolves in
+            no form. A .NET wasm application links it and runs it in this repository's CI.
+
+            HTTP is supplied by the host through `cesium_asset_accessor_create_from_callbacks`,
+            so a .NET application serves requests with `HttpClient` and the tileset loads on the
+            web.
           files: release/*.zip
           fail_on_unmatched_files: true
+
+      # The binding repositories used to find out from a monthly cron that fires the day before
+      # this repository's porter agent runs, so a version took two months to reach a package
+      # rather than one. They are told directly now. Who they are is declared in binding.yml.
+      - name: Tell the bindings a release exists
+        uses: EvergineTeam/Evergine.Bindings/.github/actions/notify-downstream@v1
+        with:
+          app-client-id: ${{ vars.APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          tag: ${{ inputs.release-tag }}
