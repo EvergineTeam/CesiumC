@@ -18,13 +18,16 @@ on:
   workflow_dispatch:
     inputs:
       triplet:
-        description: 'vcpkg triplet to probe, e.g. arm64-android or arm64-ios'
+        description: >-
+          vcpkg triplet to probe. The -release variants exist in vcpkg's community set already,
+          so no overlay triplet is needed here the way it is for the desktop ones, and they skip
+          the Debug build of every port.
         required: true
         type: choice
         options:
-          - arm64-android
-          - arm64-ios
-          - x64-android
+          - arm64-android-release
+          - arm64-ios-release
+          - arm64-ios-simulator-release
 
 env:
   NUGET_FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
@@ -55,9 +58,11 @@ jobs:
           echo "ports=$ports" >> "$GITHUB_OUTPUT"
           echo "$ports" | python3 -c "import json,sys; p=json.load(sys.stdin); print(f'{len(p)} ports: ' + ', '.join(p))"
 
+          # Matched loosely on purpose: the triplet names carry suffixes (-release, -simulator)
+          # and an anchored pattern would reject the very ones we probe with.
           case "${{ inputs.triplet }}" in
-            *-android) echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT" ;;
-            *-ios)     echo "runner=macos-14"      >> "$GITHUB_OUTPUT" ;;
+            *android*) echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT" ;;
+            *ios*)     echo "runner=macos-14"      >> "$GITHUB_OUTPUT" ;;
             *) echo "::error::no runner known for triplet '${{ inputs.triplet }}'"; exit 1 ;;
           esac
 
