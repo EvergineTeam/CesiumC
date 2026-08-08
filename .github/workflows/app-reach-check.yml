@@ -1,0 +1,63 @@
+# Temporary. Answers one question that cannot be answered by reading files: is the GitHub App
+# installed on the downstream binding repository, so a workflow here can mint a token for it?
+#
+# Every existing mint in the fleet is scoped to the repository doing the minting -- ci-doctor
+# pins `repositories: ${{ github.event.repository.name }}` and the toolbox workflows omit the
+# input and get the same default -- so nothing so far has proved reach across repositories.
+#
+# Delete once the answer is recorded. It exists to be run by hand, twice at most.
+name: App reach check
+
+on:
+  workflow_dispatch:
+    inputs:
+      downstream:
+        description: 'Repository to reach, without the owner. For example Cesium.NET'
+        required: true
+        type: string
+        default: Cesium.NET
+
+jobs:
+  reach:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a token scoped to the downstream repository
+        id: app
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.downstream }}
+          permission-contents: write
+
+      - name: Report whether the mint worked
+        shell: bash
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::no token minted for ${{ inputs.downstream }}; the App is most likely not installed there"
+            exit 1
+          fi
+          # Length only. The value never goes near the log.
+          echo "a token was minted, ${#TOKEN} characters"
+
+      # A dispatch GitHub accepts with 204 even when no workflow listens for the type, so this
+      # proves reach without needing anything on the other side and without starting any work.
+      - name: Send a harmless dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          DOWNSTREAM: ${{ inputs.downstream }}
+        run: |
+          set -euo pipefail
+          code=$(gh api -X POST "repos/${{ github.repository_owner }}/$DOWNSTREAM/dispatches" \
+            -f event_type=app-reach-check \
+            --silent --include 2>&1 | head -1 || true)
+          echo "respuesta: $code"
+          gh api -X POST "repos/${{ github.repository_owner }}/$DOWNSTREAM/dispatches" \
+            -f event_type=app-reach-check
+          echo "the dispatch was accepted, so this repository can trigger $DOWNSTREAM"
