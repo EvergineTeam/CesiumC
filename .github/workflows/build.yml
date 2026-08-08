@@ -13,7 +13,7 @@ on:
     inputs:
       release-tag:
         description: >-
-          Publish a release at this tag with the six libraries attached, e.g. v0.61.0.
+          Publish a release at this tag with the seven libraries attached, e.g. v0.61.0.
           Leave empty to build and test only. Use the cesium-native version this wrapper
           targets, so the tag answers "which Cesium is this?" without chasing a submodule.
         required: false
@@ -57,6 +57,7 @@ jobs:
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: false
+            extra-cmake: ""
 
           - os: windows-2022
             arch: arm64
@@ -69,6 +70,7 @@ jobs:
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: true  # cross-compiled, can't run on x64
+            extra-cmake: ""
 
           # Enabled 2026-08. These two were commented out in dc951ec, the very first commit, and
           # never tried since -- there is no recorded failure behind them, only "need a lot of
@@ -84,6 +86,7 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
+            extra-cmake: ""
 
           # A native arm64 runner rather than a cross-compile from x64. Cross-compiling would
           # mean an aarch64 toolchain for all thirty vcpkg dependencies; here there is none to
@@ -99,6 +102,7 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
+            extra-cmake: ""
 
           - os: macos-14
             arch: arm64
@@ -111,6 +115,49 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
+            extra-cmake: ""
+
+          # Added 2026-08-08. A matrix row rather than a separate job like wasm, because nothing
+          # about it is exceptional: it produces an ordinary shared ELF and the only thing it
+          # needs that the desktop rows do not is a toolchain file.
+          #
+          # arm64-android-release comes from vcpkg's community set, so unlike the six desktop
+          # triplets there is no overlay here. That is the point rather than an omission: an
+          # overlay *replaces* the built-in triplet instead of extending it -- the mistake the
+          # wasm job records costing two runs -- and vcpkg's arm64-android sets ANDROID_ABI, a
+          # make host triplet and a system version that a copy of the linux overlay would have
+          # silently dropped. openssl would then have failed looking like a port that does not
+          # support Android.
+          #
+          # 32-bit android-arm is deliberately absent: Google Play has required 64-bit since
+          # 2019, and it would mean building all thirty ports again for an ABI on its way out.
+          #
+          # All thirty ports were built for this triplet before the row was written, rather than
+          # discovering it here one failure at a time. Thirty out of thirty, openssl and blend2d
+          # included.
+          - os: ubuntu-latest
+            arch: arm64
+            triplet: arm64-android-release
+            generator: Ninja
+            cmake-arch: ""
+            artifact: android-arm64
+            rid: android-arm64
+            osx-architectures: ""
+            bin-path: build/bin/
+            lib-path: build/lib/libCesiumNativeC.*
+            # No emulator on the runner, so the C++ suite cannot run here. It runs on five other
+            # legs against the same sources; what is unproven on this one is the Android build of
+            # it, and that is what the .NET side has to cover.
+            skip-tests: true
+            # The toolchain has to reach the project, not just vcpkg. A triplet governs how vcpkg
+            # builds ports; without this the dependencies come out aarch64-android and the
+            # project configures as native x64, and the first symptom is find_package rejecting a
+            # package -- which reads as a missing package. Exactly what the wasm job hit.
+            extra-cmake: >-
+              -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake
+              -DANDROID_ABI=arm64-v8a
+              -DANDROID_PLATFORM=android-28
+              -DANDROID_STL=c++_static
 
           # Intel macOS was built here until 2026-08-08 and is not any more. Apple stopped
           # selling Intel Macs in 2023, GitHub's macos-13 runners are on their way out, and the
@@ -234,6 +281,7 @@ jobs:
           -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx-architectures }}
           -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
+          ${{ matrix.extra-cmake }}
 
       - name: CMake build
         run: cmake --build build --config ${{ env.CMAKE_BUILD_TYPE }} --parallel
@@ -777,13 +825,14 @@ jobs:
           pack linux-x64      linux-x64    bin/         'libCesiumNativeC.so'  libCesiumNativeC.so
           pack linux-arm64    linux-arm64  bin/         'libCesiumNativeC.so'  libCesiumNativeC.so
           pack osx-arm64      osx-arm64    bin/         'libCesiumNativeC.dylib' libCesiumNativeC.dylib
+          pack android-arm64  android-arm64 bin/        'libCesiumNativeC.so'  libCesiumNativeC.so
           pack browser-wasm   browser-wasm ''           'libCesiumNativeC.a'   libCesiumNativeC.a
 
           echo
           ls -la release/
           count=$(ls release/*.zip | wc -l)
-          if [ "$count" -ne 6 ]; then
-            echo "::error::expected 6 archives, got $count. A platform is missing."
+          if [ "$count" -ne 7 ]; then
+            echo "::error::expected 7 archives, got $count. A platform is missing."
             exit 1
           fi
 
@@ -810,7 +859,7 @@ jobs:
           body: |
             CesiumNativeC wrapping cesium-native `${{ inputs.release-tag }}`.
 
-            Six archives, one per runtime identifier. Each contains
+            Seven archives, one per runtime identifier. Each contains
             `runtimes/<rid>/native/`, so unpacking it over a .NET binding repository puts the
             library where the package expects it.
 
@@ -818,6 +867,10 @@ jobs:
             merged in, built without `-pthread` and without `-mnontrapping-fptoint`, which is
             what .NET's browser-wasm can link. It carries no `setjmp`, which .NET resolves in
             no form. A .NET wasm application links it and runs it in this repository's CI.
+
+            `android-arm64` is an ordinary shared library with its thirty dependencies linked
+            in, built against NDK API 28. There is no 32-bit `android-arm`: Google Play has
+            required 64-bit since 2019.
 
             HTTP is supplied by the host through `cesium_asset_accessor_create_from_callbacks`,
             so a .NET application serves requests with `HttpClient` and the tileset loads on the
