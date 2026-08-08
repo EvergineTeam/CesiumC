@@ -13,7 +13,7 @@ on:
     inputs:
       release-tag:
         description: >-
-          Publish a release at this tag with the seven libraries attached, e.g. v0.61.0.
+          Publish a release at this tag with the nine libraries attached, e.g. v0.61.0.
           Leave empty to build and test only. Use the cesium-native version this wrapper
           targets, so the tag answers "which Cesium is this?" without chasing a submodule.
         required: false
@@ -57,7 +57,8 @@ jobs:
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: false
-            extra-cmake: ""
+            extra-cmake: ""
+            build-target: ""
 
           - os: windows-2022
             arch: arm64
@@ -70,7 +71,8 @@ jobs:
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: true  # cross-compiled, can't run on x64
-            extra-cmake: ""
+            extra-cmake: ""
+            build-target: ""
 
           # Enabled 2026-08. These two were commented out in dc951ec, the very first commit, and
           # never tried since -- there is no recorded failure behind them, only "need a lot of
@@ -86,7 +88,8 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
-            extra-cmake: ""
+            extra-cmake: ""
+            build-target: ""
 
           # A native arm64 runner rather than a cross-compile from x64. Cross-compiling would
           # mean an aarch64 toolchain for all thirty vcpkg dependencies; here there is none to
@@ -102,7 +105,8 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
-            extra-cmake: ""
+            extra-cmake: ""
+            build-target: ""
 
           - os: macos-14
             arch: arm64
@@ -115,7 +119,8 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
-            extra-cmake: ""
+            extra-cmake: ""
+            build-target: ""
 
           # Added 2026-08-08. A matrix row rather than a separate job like wasm, because nothing
           # about it is exceptional: it produces an ordinary shared ELF and the only thing it
@@ -158,6 +163,55 @@ jobs:
               -DANDROID_ABI=arm64-v8a
               -DANDROID_PLATFORM=android-28
               -DANDROID_STL=c++_static
+            build-target: ""
+
+          # Added 2026-08-08, and unlike android these produce a *static* archive. iOS only lets
+          # an application load dynamic libraries that ship inside its own bundle as frameworks,
+          # and a .NET iOS application is compiled ahead of time and linked, so what a consumer
+          # needs is an archive to link -- the same shape as browser-wasm and for a different
+          # reason. CMakeLists.txt carries that rule.
+          #
+          # Two rows rather than one, and the simulator is not there for symmetry: a simulator
+          # build needs no signing certificate and a device build does, so it is the only one of
+          # the two that CI can put in front of a real .NET application without secrets.
+          #
+          # asmjit is absent on both and blend2d is built without its jit feature, which vcpkg.json
+          # has said for a while -- `"platform": "!ios&!wasm32"`. iOS forbids JIT, and asmjit's
+          # virtmem.cpp does not compile there at all: `use of undeclared identifier
+          # 'sys_icache_invalidate'`. Nothing to do; the manifest already asks correctly.
+          - os: macos-14
+            arch: arm64
+            triplet: arm64-ios-release
+            generator: Ninja
+            cmake-arch: ""
+            artifact: ios-arm64
+            rid: ios-arm64
+            osx-architectures: "arm64"
+            bin-path: build/bin/
+            lib-path: build/lib/libCesiumNativeC.*
+            skip-tests: true  # a device build cannot run on a runner
+            extra-cmake: >-
+              -DCMAKE_SYSTEM_NAME=iOS
+              -DCMAKE_OSX_SYSROOT=iphoneos
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+            build-target: "--target CesiumNativeC"
+
+          - os: macos-14
+            arch: arm64
+            triplet: arm64-ios-simulator-release
+            generator: Ninja
+            cmake-arch: ""
+            artifact: iossimulator-arm64
+            rid: iossimulator-arm64
+            osx-architectures: "arm64"
+            bin-path: build/bin/
+            lib-path: build/lib/libCesiumNativeC.*
+            skip-tests: true  # needs a booted simulator, which this workflow does not stand up
+            extra-cmake: >-
+              -DCMAKE_SYSTEM_NAME=iOS
+              -DCMAKE_OSX_SYSROOT=iphonesimulator
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+            build-target: "--target CesiumNativeC"
 
           # Intel macOS was built here until 2026-08-08 and is not any more. Apple stopped
           # selling Intel Macs in 2023, GitHub's macos-13 runners are on their way out, and the
@@ -283,8 +337,59 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
           ${{ matrix.extra-cmake }}
 
+      # `--target` on iOS and nothing on the rest. The default builds every target, and
+      # CesiumNativeCTests is an executable: on iOS that means a bundle and a signing identity,
+      # neither of which exists on a runner, and the leg would fail on a test binary it is never
+      # going to run. The wasm job restricts its build for the same reason.
       - name: CMake build
-        run: cmake --build build --config ${{ env.CMAKE_BUILD_TYPE }} --parallel
+        run: cmake --build build --config ${{ env.CMAKE_BUILD_TYPE }} ${{ matrix.build-target }} --parallel
+
+      # An iOS archive that holds only this wrapper's own objects is not something a consumer can
+      # link. cesium-native and every vcpkg dependency are separate archives that CMake links at
+      # executable time, which is why the build succeeds while the published asset would fail
+      # with thousands of undefined symbols. Desktop hides this -- the shared library resolves
+      # its own dependencies -- and iOS, like browser-wasm, has nothing to resolve them with.
+      #
+      # libtool rather than llvm-ar's MRI script: this runs on macOS, where libtool is the tool
+      # that merges archives, and -filelist keeps 139 paths off the command line.
+      - name: Bundle every static library into one linkable archive
+        if: startsWith(matrix.rid, 'ios')
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="build/lib/libCesiumNativeC-bundle.a"
+
+          # vcpkg installs each port twice, release under lib/ and debug under debug/lib/, and a
+          # plain find takes both. On the wasm leg that meant 257 archives instead of 139 and
+          # 340 MB instead of 55, and it went unnoticed while the ports came from the binary
+          # cache, which does not materialise the debug tree. Shipping both would also put two
+          # builds of the same library in one archive and leave the consumer's linker to pick.
+          find build -name '*.a' ! -path '*/debug/*' ! -name 'libCesiumNativeC-bundle.a' \
+            | sort -u > archives.txt
+          if grep -q '/debug/' archives.txt; then
+            echo "::error::the debug tree reached the merge list; the exclusion no longer matches the layout"
+            grep '/debug/' archives.txt
+            exit 1
+          fi
+          count=$(wc -l < archives.txt)
+          if [ "$count" -lt 2 ]; then
+            echo "::error::found only $count archive(s); the dependency libraries are not where this expects them"
+            cat archives.txt
+            exit 1
+          fi
+
+          echo "merging $count archives"
+          libtool -static -no_warning_for_no_symbols -filelist archives.txt -o "$bundle"
+
+          test -f "$bundle" || { echo "::error::the merge produced no archive"; exit 1; }
+          before=$(stat -f%z build/lib/libCesiumNativeC.a)
+          after=$(stat -f%z "$bundle")
+          awk -v b="$before" -v a="$after" -v c="$count" \
+            'BEGIN{printf "  wrapper only: %.1f MB\n  bundled:      %.1f MB (from %d archives)\n", b/1e6, a/1e6, c}'
+
+          # From here on the bundle is the archive. Everything downstream -- the upload, the
+          # release asset -- has to see what a consumer will actually get.
+          mv "$bundle" build/lib/libCesiumNativeC.a
 
       # The NDK keeps debug info where the desktop toolchains do not, and it is not a rounding
       # error. Measured on the first green android run: 251.5 MB, of which 223.7 MB is .debug_*
@@ -857,13 +962,15 @@ jobs:
           pack linux-arm64    linux-arm64  bin/         'libCesiumNativeC.so'  libCesiumNativeC.so
           pack osx-arm64      osx-arm64    bin/         'libCesiumNativeC.dylib' libCesiumNativeC.dylib
           pack android-arm64  android-arm64 bin/        'libCesiumNativeC.so'  libCesiumNativeC.so
+          pack ios-arm64      ios-arm64    lib/         'libCesiumNativeC.a'   libCesiumNativeC.a
+          pack iossimulator-arm64 iossimulator-arm64 lib/ 'libCesiumNativeC.a'   libCesiumNativeC.a
           pack browser-wasm   browser-wasm ''           'libCesiumNativeC.a'   libCesiumNativeC.a
 
           echo
           ls -la release/
           count=$(ls release/*.zip | wc -l)
-          if [ "$count" -ne 7 ]; then
-            echo "::error::expected 7 archives, got $count. A platform is missing."
+          if [ "$count" -ne 9 ]; then
+            echo "::error::expected 9 archives, got $count. A platform is missing."
             exit 1
           fi
 
@@ -890,7 +997,7 @@ jobs:
           body: |
             CesiumNativeC wrapping cesium-native `${{ inputs.release-tag }}`.
 
-            Seven archives, one per runtime identifier. Each contains
+            Nine archives, one per runtime identifier. Each contains
             `runtimes/<rid>/native/`, so unpacking it over a .NET binding repository puts the
             library where the package expects it.
 
@@ -902,6 +1009,10 @@ jobs:
             `android-arm64` is an ordinary shared library with its thirty dependencies linked
             in, built against NDK API 28. There is no 32-bit `android-arm`: Google Play has
             required 64-bit since 2019.
+
+            `ios-arm64` and `iossimulator-arm64` are static archives with everything merged in,
+            because iOS only lets an application load dynamic libraries that ship inside its own
+            bundle. They carry no `asmjit`: iOS forbids JIT, and blend2d is built without it.
 
             HTTP is supplied by the host through `cesium_asset_accessor_create_from_callbacks`,
             so a .NET application serves requests with `HttpClient` and the tileset loads on the

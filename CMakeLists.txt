@@ -67,10 +67,16 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/cesium-native
 
 # ---------- CesiumNativeC shared library ----------
 
-# STATIC on Emscripten. A wasm "shared library" is a SIDE_MODULE, which is not how .NET's
-# browser-wasm consumes native code: it links archives into the app, which is what ImGui.Net's
-# cimgui.a does today. Everywhere else this stays a real shared library, unchanged.
-if(EMSCRIPTEN)
+# STATIC on Emscripten and on iOS, for reasons that look alike and are not.
+#
+# A wasm "shared library" is a SIDE_MODULE, which is not how .NET's browser-wasm consumes native
+# code: it links archives into the app, which is what ImGui.Net's cimgui.a does today.
+#
+# iOS is a platform rule rather than a linking model. An application may only load dynamic
+# libraries that ship inside its own bundle as frameworks, and a .NET iOS application is compiled
+# ahead of time and linked, so the archive is linked into it. Android is the counter-example
+# worth keeping in mind here: it is an ordinary shared object and stays SHARED.
+if(EMSCRIPTEN OR IOS)
     set(CESIUM_NATIVE_C_LIBRARY_TYPE STATIC)
 else()
     set(CESIUM_NATIVE_C_LIBRARY_TYPE SHARED)
