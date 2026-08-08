@@ -126,6 +126,16 @@ jobs:
           set -o pipefail
           echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-unset}"
 
+          # From an empty directory, and this is the whole trick. vcpkg.json sits in the repo
+          # root, so running from there puts vcpkg in manifest mode, where `install <port>` is
+          # refused outright: "In manifest mode, vcpkg install does not support individual
+          # package arguments". The first run of this probe reported all thirty ports as failing
+          # for that reason, including header-only ones like glm and rapidjson, which is what
+          # gave it away -- those cannot fail for anything to do with Android.
+          scratch="$RUNNER_TEMP/classic"
+          mkdir -p "$scratch"
+          cd "$scratch"
+
           if "$VCPKG_ROOT/vcpkg" install "${{ matrix.port }}:${{ inputs.triplet }}" \
                --allow-unsupported 2>&1 | tee build.log; then
             echo "ok" > result.txt
@@ -142,10 +152,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: probe-${{ matrix.port }}
+          # Absolute, because the step above moves out of the workspace to escape manifest mode
+          # and these are written where it lands.
           path: |
-            result.txt
-            port.txt
-            reason.txt
+            ${{ runner.temp }}/classic/result.txt
+            ${{ runner.temp }}/classic/port.txt
+            ${{ runner.temp }}/classic/reason.txt
           if-no-files-found: warn
           retention-days: 7
 
@@ -199,6 +211,25 @@ jobs:
             cat "results/probe-$p/reason.txt" 2>/dev/null || echo "  (no reason captured)"
           done
 
-          # Deliberately green either way. A port that does not build is the answer this run
-          # exists to produce, not a broken run.
+          # The canary, and it is here because the first run needed it. glm, rapidjson, picosha2
+          # and ms-gsl are header-only: they copy files and compile nothing, so they cannot fail
+          # for any reason to do with the target platform. If one of them is red the probe itself
+          # is broken and every other verdict in this run is worthless -- which is exactly what
+          # happened, when running inside the repository put vcpkg in manifest mode and all
+          # thirty ports "failed" without a compiler ever starting.
+          canaries="glm rapidjson picosha2 ms-gsl"
+          sick=""
+          for c in $canaries; do
+            [ -f "results/probe-$c/result.txt" ] || continue
+            [ "$(cat "results/probe-$c/result.txt")" = "ok" ] || sick="$sick $c"
+          done
+
+          if [ -n "$sick" ]; then
+            echo
+            echo "::error::header-only ports failed:$sick. That is this workflow being wrong, not the platform. Do not read the results above as a verdict on ${{ inputs.triplet }}."
+            exit 1
+          fi
+
+          # Green otherwise, whatever the tally. A port that does not build is the answer this
+          # run exists to produce, not a broken run.
           echo "probe complete"
