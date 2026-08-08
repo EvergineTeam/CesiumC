@@ -1,0 +1,199 @@
+# Answers one question before any mobile work starts: which of the thirty vcpkg ports this
+# project depends on can be built for a mobile triplet, and which cannot.
+#
+# It exists because the precedent we have is misleading. JoltPhysicsC builds for android and iOS
+# already, so the workflow shape is known -- but Jolt has zero vcpkg dependencies and this has
+# thirty, so none of what it proves carries over. openssl, blend2d, ktx, s2geometry and spz are
+# the ones nobody has ever built for these triplets here.
+#
+# One port per job, on purpose, and two things follow from it. Every failure is visible in one
+# run rather than one per run, because vcpkg in manifest mode stops at the first broken port and
+# turns this into thirty rounds of whack-a-mole. And thirty small jobs finish in the time the
+# slowest port takes rather than the sum of all of them.
+#
+# Throwaway. Delete it once the answer is recorded and the real matrix rows exist.
+name: Probe mobile ports
+
+on:
+  workflow_dispatch:
+    inputs:
+      triplet:
+        description: 'vcpkg triplet to probe, e.g. arm64-android or arm64-ios'
+        required: true
+        type: choice
+        options:
+          - arm64-android
+          - arm64-ios
+          - x64-android
+
+env:
+  NUGET_FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+
+jobs:
+  # The port list comes out of vcpkg.json rather than being written here. A copy would drift the
+  # first time a dependency is added, and then this would report a clean sheet for a set that is
+  # no longer the one being built.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ports: ${{ steps.read.outputs.ports }}
+      runner: ${{ steps.read.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: read
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ports=$(python3 -c "
+          import json
+          d = json.load(open('vcpkg.json'))
+          names = [x if isinstance(x, str) else x['name'] for x in d['dependencies']]
+          print(json.dumps(sorted(set(names))))
+          ")
+          echo "ports=$ports" >> "$GITHUB_OUTPUT"
+          echo "$ports" | python3 -c "import json,sys; p=json.load(sys.stdin); print(f'{len(p)} ports: ' + ', '.join(p))"
+
+          case "${{ inputs.triplet }}" in
+            *-android) echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT" ;;
+            *-ios)     echo "runner=macos-14"      >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::no runner known for triplet '${{ inputs.triplet }}'"; exit 1 ;;
+          esac
+
+  port:
+    needs: prepare
+    name: ${{ matrix.port }}
+    runs-on: ${{ needs.prepare.outputs.runner }}
+    # The point of the run is to collect failures, so a failure must not stop the others or fail
+    # the workflow. The summary job below is what reports.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        port: ${{ fromJSON(needs.prepare.outputs.ports) }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          # The same commit the real build pins. Probing a different vcpkg would answer a
+          # question about a version we do not use.
+          vcpkgGitCommitId: 62159a45e18f3a9ac0548628dcaf74fcb60c6ff9
+
+      # Read-only here whatever the branch. This is a probe, and a probe that poisons the shared
+      # cache with half-built mobile ports would cost more than it tells us.
+      - name: Set up the binary cache, best effort
+        shell: bash
+        env:
+          NUGET_TOKEN: ${{ secrets.VCPKG_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          fetch_out="$("$VCPKG_ROOT/vcpkg" fetch nuget 2>&1)"
+          if [ $? -ne 0 ]; then
+            echo "::warning::no nuget on this runner; building from source."
+            exit 0
+          fi
+          nuget_path="$(printf '%s\n' "$fetch_out" | grep -v '^[[:space:]]*$' | tail -n 1)"
+          [ -e "$nuget_path" ] || exit 0
+          case "$nuget_path" in
+            *.exe) nuget=(mono "$nuget_path") ;;
+            *)     nuget=("$nuget_path") ;;
+          esac
+          "${nuget[@]}" sources add -Source "$NUGET_FEED_URL" -StorePasswordInClearText \
+            -Name GitHubPackages -UserName "$GITHUB_REPOSITORY_OWNER" -Password "$NUGET_TOKEN" || exit 0
+          echo "VCPKG_BINARY_SOURCES=clear;nuget,$NUGET_FEED_URL,read" >> "$GITHUB_ENV"
+
+      # Nothing to chainload. Unlike Emscripten, vcpkg ships community triplets for these that set
+      # VCPKG_CMAKE_SYSTEM_NAME themselves, so the NDK on the runner is all android needs and the
+      # Xcode toolchain is all iOS needs.
+      #
+      # --allow-unsupported for the same reason the wasm job passes it: a port's Supports field is
+      # a blanket statement about the port including features we do not ask for. blend2d declares
+      # !wasm32 and builds fine as [core]; the mobile equivalents are worth finding out rather
+      # than being refused up front.
+      - name: Build ${{ matrix.port }} for ${{ inputs.triplet }}
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-unset}"
+
+          if "$VCPKG_ROOT/vcpkg" install "${{ matrix.port }}:${{ inputs.triplet }}" \
+               --allow-unsupported 2>&1 | tee build.log; then
+            echo "ok" > result.txt
+          else
+            echo "fail" > result.txt
+            # The last lines are what says why, and they are what the summary quotes. Without
+            # this the report would say "it failed" and send somebody back into the log.
+            tail -30 build.log > reason.txt
+          fi
+          printf '%s' "${{ matrix.port }}" > port.txt
+
+      - name: Record the result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ matrix.port }}
+          path: |
+            result.txt
+            port.txt
+            reason.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+  # The whole reason the matrix has continue-on-error. This is the job that reports, and it runs
+  # whatever happened above.
+  summary:
+    needs: port
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: probe-*
+          path: results
+
+      - name: Report
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0; bad=0
+          {
+            echo "## ${{ inputs.triplet }}"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed=""
+          for d in results/probe-*/; do
+            port=$(cat "$d/port.txt" 2>/dev/null || basename "$d" | sed 's/^probe-//')
+            status=$(cat "$d/result.txt" 2>/dev/null || echo "unknown")
+            if [ "$status" = "ok" ]; then
+              ok=$((ok + 1))
+              printf '  ok    %s\n' "$port"
+            else
+              bad=$((bad + 1))
+              failed="$failed $port"
+              printf '  FAIL  %s\n' "$port"
+            fi
+          done
+
+          echo
+          echo "$ok built, $bad failed"
+          {
+            echo "\`$ok\` built, \`$bad\` failed"
+            echo
+            [ -n "$failed" ] && { echo "Failed:"; for p in $failed; do echo "- \`$p\`"; done; }
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for p in $failed; do
+            echo
+            echo "=== $p ==="
+            cat "results/probe-$p/reason.txt" 2>/dev/null || echo "  (no reason captured)"
+          done
+
+          # Deliberately green either way. A port that does not build is the answer this run
+          # exists to produce, not a broken run.
+          echo "probe complete"
