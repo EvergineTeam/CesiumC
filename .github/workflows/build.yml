@@ -13,7 +13,7 @@ on:
     inputs:
       release-tag:
         description: >-
-          Publish a release at this tag with the seven libraries attached, e.g. v0.61.0.
+          Publish a release at this tag with the six libraries attached, e.g. v0.61.0.
           Leave empty to build and test only. Use the cesium-native version this wrapper
           targets, so the tag answers "which Cesium is this?" without chasing a submodule.
         required: false
@@ -112,21 +112,14 @@ jobs:
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
 
-          # Intel macOS, cross-compiled from the arm64 runner. Apple's clang targets both
-          # architectures from either host, so this needs no special toolchain -- only a triplet
-          # that says x86_64. GitHub's Intel macOS runners are on their way out, so depending on
-          # one would be building a dependency with an expiry date.
-          - os: macos-14
-            arch: x64
-            triplet: x64-osx
-            generator: Ninja
-            cmake-arch: ""
-            artifact: osx-x64
-            rid: osx-x64
-            osx-architectures: "x86_64"
-            bin-path: build/bin/
-            lib-path: build/lib/libCesiumNativeC.*
-            skip-tests: true  # cross-compiled, cannot run on arm64
+          # Intel macOS was built here until 2026-08-08 and is not any more. Apple stopped
+          # selling Intel Macs in 2023, GitHub's macos-13 runners are on their way out, and the
+          # consequence was concrete rather than theoretical: it was the only one of the seven
+          # identifiers that nothing had ever executed. Cross-compiled on an arm64 mac, so the
+          # C++ tests skipped it, and three attempts across two days to get an Intel runner for
+          # the .NET smoke test never got a machine.
+          #
+          # Shipping a library that no test on earth has run is worse than not shipping it.
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.artifact }}
@@ -783,15 +776,14 @@ jobs:
           pack windows-arm64  win-arm64    bin/Release/ '*.dll'                CesiumNativeC.dll
           pack linux-x64      linux-x64    bin/         'libCesiumNativeC.so'  libCesiumNativeC.so
           pack linux-arm64    linux-arm64  bin/         'libCesiumNativeC.so'  libCesiumNativeC.so
-          pack osx-x64        osx-x64      bin/         'libCesiumNativeC.dylib' libCesiumNativeC.dylib
           pack osx-arm64      osx-arm64    bin/         'libCesiumNativeC.dylib' libCesiumNativeC.dylib
           pack browser-wasm   browser-wasm ''           'libCesiumNativeC.a'   libCesiumNativeC.a
 
           echo
           ls -la release/
           count=$(ls release/*.zip | wc -l)
-          if [ "$count" -ne 7 ]; then
-            echo "::error::expected 7 archives, got $count. A platform is missing."
+          if [ "$count" -ne 6 ]; then
+            echo "::error::expected 6 archives, got $count. A platform is missing."
             exit 1
           fi
 
@@ -818,7 +810,7 @@ jobs:
           body: |
             CesiumNativeC wrapping cesium-native `${{ inputs.release-tag }}`.
 
-            Seven archives, one per runtime identifier. Each contains
+            Six archives, one per runtime identifier. Each contains
             `runtimes/<rid>/native/`, so unpacking it over a .NET binding repository puts the
             library where the package expects it.
 
