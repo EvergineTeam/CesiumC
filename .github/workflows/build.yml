@@ -57,7 +57,7 @@ jobs:
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: false
-            extra-cmake: ""
+            extra-cmake: ""
             build-target: ""
 
           - os: windows-2022
@@ -71,7 +71,7 @@ jobs:
             bin-path: build/bin/Release/*.dll
             lib-path: build/lib/Release/CesiumNativeC.*
             skip-tests: true  # cross-compiled, can't run on x64
-            extra-cmake: ""
+            extra-cmake: ""
             build-target: ""
 
           # Enabled 2026-08. These two were commented out in dc951ec, the very first commit, and
@@ -88,7 +88,7 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
-            extra-cmake: ""
+            extra-cmake: ""
             build-target: ""
 
           # A native arm64 runner rather than a cross-compile from x64. Cross-compiling would
@@ -105,7 +105,7 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
-            extra-cmake: ""
+            extra-cmake: ""
             build-target: ""
 
           - os: macos-14
@@ -119,7 +119,7 @@ jobs:
             bin-path: build/bin/
             lib-path: build/lib/libCesiumNativeC.*
             skip-tests: false
-            extra-cmake: ""
+            extra-cmake: ""
             build-target: ""
 
           # Added 2026-08-08. A matrix row rather than a separate job like wasm, because nothing
@@ -372,7 +372,21 @@ jobs:
           # 340 MB instead of 55, and it went unnoticed while the ports came from the binary
           # cache, which does not materialise the debug tree. Shipping both would also put two
           # builds of the same library in one archive and leave the consumer's linker to pick.
+          # Two more are dropped because they are redundant, not unwanted. vcpkg installs
+          # everything a port builds and this find takes all of it rather than what the link
+          # used, so redundant copies come along:
+          #
+          #   libjpeg.a          cesium-native includes only turbojpeg.h and links
+          #                      libjpeg-turbo::turbojpeg. The classic API is unused here, and
+          #                      libturbojpeg.a already carries the same core.
+          #   libwebpdecoder.a   cesium-native links WebP::webp and WebP::webpdecoder both, and
+          #                      the decoder is a strict subset of the whole library.
+          #
+          # Harmless until something links this archive with -force_load, which pulls in every
+          # member: the shared objects then arrive twice and the link dies on duplicate symbols.
+          # That is exactly what a .NET iOS application does, and it cost a release to find.
           find build -name '*.a' ! -path '*/debug/*' ! -name 'libCesiumNativeC-bundle.a' \
+            ! -name 'libjpeg.a' ! -name 'libwebpdecoder.a' \
             | sort -u > archives.txt
           if grep -q '/debug/' archives.txt; then
             echo "::error::the debug tree reached the merge list; the exclusion no longer matches the layout"
@@ -394,6 +408,44 @@ jobs:
           after=$(stat -f%z "$bundle")
           awk -v b="$before" -v a="$after" -v c="$count" \
             'BEGIN{printf "  wrapper only: %.1f MB\n  bundled:      %.1f MB (from %d archives)\n", b/1e6, a/1e6, c}'
+
+          # No symbol may be defined by two members, and this is the check that makes the
+          # exclusions above durable rather than a guess.
+          #
+          # A duplicate is invisible to an ordinary link, which takes the first definition and
+          # moves on, and fatal to one using -force_load, which takes every member. A .NET iOS
+          # application does the latter, so the failure landed on a consumer an hour downstream
+          # with an error naming its own project. Two overlapping pairs were found by reading
+          # that error; there is no summary line from the linker, so there may have been more.
+          # This is what says so here instead.
+          # nm -A prefixes every line with archive(member), and the letter before the name is the
+          # symbol type. U means undefined, and those must not be counted: an undefined symbol
+          # appears in every member that calls it, which would report the whole archive as
+          # duplicated. Everything else is a definition.
+          nm -A -g "$bundle" 2>/dev/null \
+            | awk '$NF != "" && $(NF-1) != "U" { member = $1; sub(/^.*\(/, "", member); sub(/\):$/, "", member); print $NF, member }' \
+            | sort -u > defined.txt
+
+          # The parser is the part that could fail quietly, and a guard that reads nothing passes
+          # everything. A merged archive of this size defines symbols in the tens of thousands,
+          # so an empty or tiny list means the parse broke rather than the archive being clean.
+          symbols=$(wc -l < defined.txt)
+          echo "  $symbols defined symbols across the archive"
+          if [ "$symbols" -lt 1000 ]; then
+            echo "::error::only $symbols definitions parsed out of nm; this check is not reading the archive"
+            nm -A -g "$bundle" 2>/dev/null | head -5
+            exit 1
+          fi
+
+          awk '{ if ($1 == prev) print $1 " in " prevmember " and " $2; prev = $1; prevmember = $2 }' \
+            defined.txt | sort -u > duplicates.txt
+
+          if [ -s duplicates.txt ]; then
+            echo "::error::the merged archive defines $(wc -l < duplicates.txt) symbol(s) twice"
+            head -20 duplicates.txt | sed 's/^/  /'
+            exit 1
+          fi
+          echo "  no symbol is defined by two members"
 
           # From here on the bundle is the archive. Everything downstream -- the upload, the
           # release asset -- has to see what a consumer will actually get.
@@ -622,7 +674,14 @@ jobs:
           # went unnoticed while the ports came from the binary cache, which does not
           # materialise the debug tree. Shipping both would also put two builds of the same
           # library in one archive and leave the consumer's linker to pick.
+          # libjpeg.a and libwebpdecoder.a for the same reason the iOS merge drops them: vcpkg
+          # installs everything a port builds, so the classic libjpeg API nothing here uses and
+          # the webp decoder that is a subset of libwebp both come along, carrying a second copy
+          # of objects already present. Nothing has ever linked this archive with -force_load,
+          # which is why it went unnoticed on this leg for months, but the duplication is real
+          # and the archive is smaller without it.
           find build -name '*.a' ! -path '*/debug/*' ! -path '*/libCesiumNativeC-bundle.a' \
+            ! -name 'libjpeg.a' ! -name 'libwebpdecoder.a' \
             | sort -u > archives.txt
           if grep -q '/debug/' archives.txt; then
             echo "::error::the debug tree reached the merge list; the exclusion above no longer matches the layout"
