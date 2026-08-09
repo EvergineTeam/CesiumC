@@ -418,12 +418,24 @@ jobs:
           # with an error naming its own project. Two overlapping pairs were found by reading
           # that error; there is no summary line from the linker, so there may have been more.
           # This is what says so here instead.
-          # nm -A prefixes every line with archive(member), and the letter before the name is the
-          # symbol type. U means undefined, and those must not be counted: an undefined symbol
-          # appears in every member that calls it, which would report the whole archive as
-          # duplicated. Everything else is a definition.
+          # T, D and B only, which is narrower than "not undefined" and has to be.
+          #
+          # The letter before the name is the symbol type. U is undefined and appears in every
+          # member that calls the symbol. W and S are weak: C++ emits inline functions, template
+          # instantiations and static guard variables into every translation unit that uses them,
+          # and the linker coalesces those rather than rejecting them. Counting either reports
+          # the archive as almost entirely duplicated -- the first version of this check found
+          # 24656, nearly all of them guard variables like
+          # __ZGVN10CesiumGltf12AccessorSpec4Type4MAT2E, while the linker had objected to
+          # eighteen. Only strong global definitions can collide.
           nm -A -g "$bundle" 2>/dev/null \
-            | awk '$NF != "" && $(NF-1) != "U" { member = $1; sub(/^.*\(/, "", member); sub(/\):$/, "", member); print $NF, member }' \
+            | awk '$(NF-1) == "T" || $(NF-1) == "D" || $(NF-1) == "B" {
+                     member = $1
+                     sub(/:$/, "", member)          # nm writes archive.a:member.o: on macOS
+                     sub(/\)$/, "", member)         # and archive.a(member.o) elsewhere
+                     sub(/^.*[(:]/, "", member)
+                     print $NF, member
+                   }' \
             | sort -u > defined.txt
 
           # The parser is the part that could fail quietly, and a guard that reads nothing passes
