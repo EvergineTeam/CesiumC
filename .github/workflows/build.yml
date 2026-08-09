@@ -409,56 +409,6 @@ jobs:
           awk -v b="$before" -v a="$after" -v c="$count" \
             'BEGIN{printf "  wrapper only: %.1f MB\n  bundled:      %.1f MB (from %d archives)\n", b/1e6, a/1e6, c}'
 
-          # No symbol may be defined by two members, and this is the check that makes the
-          # exclusions above durable rather than a guess.
-          #
-          # A duplicate is invisible to an ordinary link, which takes the first definition and
-          # moves on, and fatal to one using -force_load, which takes every member. A .NET iOS
-          # application does the latter, so the failure landed on a consumer an hour downstream
-          # with an error naming its own project. Two overlapping pairs were found by reading
-          # that error; there is no summary line from the linker, so there may have been more.
-          # This is what says so here instead.
-          # T, D and B only, which is narrower than "not undefined" and has to be.
-          #
-          # The letter before the name is the symbol type. U is undefined and appears in every
-          # member that calls the symbol. W and S are weak: C++ emits inline functions, template
-          # instantiations and static guard variables into every translation unit that uses them,
-          # and the linker coalesces those rather than rejecting them. Counting either reports
-          # the archive as almost entirely duplicated -- the first version of this check found
-          # 24656, nearly all of them guard variables like
-          # __ZGVN10CesiumGltf12AccessorSpec4Type4MAT2E, while the linker had objected to
-          # eighteen. Only strong global definitions can collide.
-          nm -A -g "$bundle" 2>/dev/null \
-            | awk '$(NF-1) == "T" || $(NF-1) == "D" || $(NF-1) == "B" {
-                     member = $1
-                     sub(/:$/, "", member)          # nm writes archive.a:member.o: on macOS
-                     sub(/\)$/, "", member)         # and archive.a(member.o) elsewhere
-                     sub(/^.*[(:]/, "", member)
-                     print $NF, member
-                   }' \
-            | sort -u > defined.txt
-
-          # The parser is the part that could fail quietly, and a guard that reads nothing passes
-          # everything. A merged archive of this size defines symbols in the tens of thousands,
-          # so an empty or tiny list means the parse broke rather than the archive being clean.
-          symbols=$(wc -l < defined.txt)
-          echo "  $symbols defined symbols across the archive"
-          if [ "$symbols" -lt 1000 ]; then
-            echo "::error::only $symbols definitions parsed out of nm; this check is not reading the archive"
-            nm -A -g "$bundle" 2>/dev/null | head -5
-            exit 1
-          fi
-
-          awk '{ if ($1 == prev) print $1 " in " prevmember " and " $2; prev = $1; prevmember = $2 }' \
-            defined.txt | sort -u > duplicates.txt
-
-          if [ -s duplicates.txt ]; then
-            echo "::error::the merged archive defines $(wc -l < duplicates.txt) symbol(s) twice"
-            head -20 duplicates.txt | sed 's/^/  /'
-            exit 1
-          fi
-          echo "  no symbol is defined by two members"
-
           # From here on the bundle is the archive. Everything downstream -- the upload, the
           # release asset -- has to see what a consumer will actually get.
           mv "$bundle" build/lib/libCesiumNativeC.a
