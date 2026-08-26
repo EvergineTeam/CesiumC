@@ -14,6 +14,8 @@
 
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <Cesium3DTilesSelection/TilesetExternals.h>
+#include <Cesium3DTilesSelection/ViewState.h>
+#include <Cesium3DTilesSelection/ViewUpdateResult.h>
 #include <CesiumAsync/AsyncSystem.h>
 #include <CesiumAsync/IAssetAccessor.h>
 #include <CesiumAsync/ITaskProcessor.h>
@@ -96,8 +98,15 @@ struct ExternalsWrapper {
     std::shared_ptr<CCallbackRendererResources> pRendererResources;
 };
 
+struct CViewUpdateResult {
+    const Cesium3DTilesSelection::ViewUpdateResult* pNativeResult = nullptr;
+    std::vector<Cesium3DTilesSelection::Tile::ConstPointer> tilesFadingOut;
+};
+
 struct TilesetWrapper {
     std::unique_ptr<Cesium3DTilesSelection::Tileset> pTileset;
+    std::vector<Cesium3DTilesSelection::ViewState> viewStates;
+    CViewUpdateResult viewUpdateResult;
 
     // Root-tile-available callback (single slot, updatable)
     CesiumRootTileAvailableCallback rootTileCallback = nullptr;

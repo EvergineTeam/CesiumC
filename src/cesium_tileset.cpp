@@ -55,7 +55,6 @@ static const TilesetWrapper* asTileset(const CesiumTileset* h) {
 using Cesium3DTilesSelection::TilesetOptions;
 using Cesium3DTilesSelection::SampleHeightResult;
 using Cesium3DTilesSelection::ViewState;
-using Cesium3DTilesSelection::ViewUpdateResult;
 
 static CesiumGeospatial::Cartographic toNativeCartographic(
     CesiumCartographic cartographic) {
@@ -200,22 +199,40 @@ CESIUM_API const CesiumViewUpdateResult* cesium_tileset_update_view(
     auto* wrapper = asTileset(tileset);
     auto* ts = wrapper->pTileset.get();
 
-    std::vector<ViewState> frustums;
-    frustums.reserve(static_cast<size_t>(viewStateCount));
+    auto& viewStatesScratch = wrapper->viewStates;
+    viewStatesScratch.clear();
+    viewStatesScratch.reserve(static_cast<size_t>(viewStateCount));
     for (int i = 0; i < viewStateCount; ++i) {
         if (viewStates[i]) {
-            frustums.push_back(
+            viewStatesScratch.push_back(
                 *reinterpret_cast<const ViewState*>(viewStates[i]));
         }
     }
 
     auto& viewGroup = ts->getDefaultViewGroup();
-    const auto& result = ts->updateViewGroup(viewGroup, frustums, deltaTime);
+    const auto& result = ts->updateViewGroup(viewGroup, viewStatesScratch, deltaTime);
     ts->loadTiles();
 
-    return reinterpret_cast<const CesiumViewUpdateResult*>(&result);
+    wrapper->viewUpdateResult.pNativeResult = &result;
+    wrapper->viewUpdateResult.tilesFadingOut.assign(
+        result.tilesFadingOut.begin(), result.tilesFadingOut.end());
+    return reinterpret_cast<const CesiumViewUpdateResult*>(&wrapper->viewUpdateResult);
     CESIUM_TRY_END
     return nullptr;
+}
+
+CESIUM_API void cesium_tileset_trim_memory(CesiumTileset* tileset) {
+    if (!tileset) return;
+    CESIUM_TRY_BEGIN
+    auto& options = asTileset(tileset)->pTileset->getOptions();
+    struct RestoreCacheLimit {
+        Cesium3DTilesSelection::TilesetOptions& options;
+        int64_t maximumCachedBytes;
+        ~RestoreCacheLimit() { options.maximumCachedBytes = maximumCachedBytes; }
+    } restore{options, options.maximumCachedBytes};
+    options.maximumCachedBytes = 0;
+    asTileset(tileset)->pTileset->loadTiles();
+    CESIUM_TRY_END
 }
 
 CESIUM_API const CesiumTile* cesium_tileset_get_root_tile(const CesiumTileset* tileset) {
@@ -340,20 +357,21 @@ CESIUM_API void cesium_tileset_sample_height_most_detailed(
 // ViewUpdateResult accessors
 // ============================================================================
 
-static const ViewUpdateResult* asResult(const CesiumViewUpdateResult* h) {
-    return reinterpret_cast<const ViewUpdateResult*>(h);
+static const CViewUpdateResult* asResult(const CesiumViewUpdateResult* h) {
+    return reinterpret_cast<const CViewUpdateResult*>(h);
 }
 
 CESIUM_API int cesium_view_update_result_get_tiles_to_render_count(
     const CesiumViewUpdateResult* result)
 {
-    return static_cast<int>(asResult(result)->tilesToRenderThisFrame.size());
+    return static_cast<int>(
+        asResult(result)->pNativeResult->tilesToRenderThisFrame.size());
 }
 
 CESIUM_API const CesiumTile* cesium_view_update_result_get_tile_to_render(
     const CesiumViewUpdateResult* result, int index)
 {
-    const auto& tiles = asResult(result)->tilesToRenderThisFrame;
+    const auto& tiles = asResult(result)->pNativeResult->tilesToRenderThisFrame;
     return reinterpret_cast<const CesiumTile*>(tiles[static_cast<size_t>(index)].get());
 }
 
@@ -367,44 +385,43 @@ CESIUM_API const CesiumTile* cesium_view_update_result_get_tile_fading_out(
     const CesiumViewUpdateResult* result, int index)
 {
     const auto& tiles = asResult(result)->tilesFadingOut;
-    auto it = std::next(tiles.begin(), index);
-    return reinterpret_cast<const CesiumTile*>(it->get());
+    return reinterpret_cast<const CesiumTile*>(tiles[static_cast<size_t>(index)].get());
 }
 
 CESIUM_API int32_t cesium_view_update_result_get_frame_number(
     const CesiumViewUpdateResult* result)
 {
-    return asResult(result)->frameNumber;
+    return asResult(result)->pNativeResult->frameNumber;
 }
 
 CESIUM_API uint32_t cesium_view_update_result_get_tiles_visited(
     const CesiumViewUpdateResult* result)
 {
-    return asResult(result)->tilesVisited;
+    return asResult(result)->pNativeResult->tilesVisited;
 }
 
 CESIUM_API uint32_t cesium_view_update_result_get_tiles_culled(
     const CesiumViewUpdateResult* result)
 {
-    return asResult(result)->tilesCulled;
+    return asResult(result)->pNativeResult->tilesCulled;
 }
 
 CESIUM_API uint32_t cesium_view_update_result_get_max_depth_visited(
     const CesiumViewUpdateResult* result)
 {
-    return asResult(result)->maxDepthVisited;
+    return asResult(result)->pNativeResult->maxDepthVisited;
 }
 
 CESIUM_API int32_t cesium_view_update_result_get_worker_thread_load_queue_length(
     const CesiumViewUpdateResult* result)
 {
-    return asResult(result)->workerThreadTileLoadQueueLength;
+    return asResult(result)->pNativeResult->workerThreadTileLoadQueueLength;
 }
 
 CESIUM_API int32_t cesium_view_update_result_get_main_thread_load_queue_length(
     const CesiumViewUpdateResult* result)
 {
-    return asResult(result)->mainThreadTileLoadQueueLength;
+    return asResult(result)->pNativeResult->mainThreadTileLoadQueueLength;
 }
 
 } // extern "C"

@@ -1071,6 +1071,7 @@ static int test_null_safety() {
     cesium_tileset_options_destroy(nullptr);
     cesium_view_state_destroy(nullptr);
     cesium_tileset_destroy(nullptr);
+    cesium_tileset_trim_memory(nullptr);
     return 0;
 }
 

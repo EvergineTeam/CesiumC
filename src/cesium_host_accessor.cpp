@@ -7,7 +7,6 @@
 
 #include "cesium_errors_internal.h"
 
-#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <map>
@@ -157,9 +156,7 @@ CHostAssetAccessor::~CHostAssetAccessor() {
 
 void CHostAssetAccessor::forgetRequest(CesiumAssetRequestId id) {
     std::lock_guard<CMutex> lock(this->_mutex);
-    this->_inFlight.erase(
-        std::remove(this->_inFlight.begin(), this->_inFlight.end(), id),
-        this->_inFlight.end());
+    this->_inFlight.erase(id);
 }
 
 int32_t CHostAssetAccessor::pendingRequestCount() const {
@@ -173,7 +170,8 @@ void CHostAssetAccessor::cancelAllRequests() {
     std::vector<CesiumAssetRequestId> ids;
     {
         std::lock_guard<CMutex> lock(this->_mutex);
-        ids.swap(this->_inFlight);
+        ids.assign(this->_inFlight.begin(), this->_inFlight.end());
+        this->_inFlight.clear();
     }
 
     // Take them out of the registry before telling the host, for the same reason.
@@ -239,7 +237,7 @@ CesiumAsync::Future<std::shared_ptr<CesiumAsync::IAssetRequest>> CHostAssetAcces
 
     {
         std::lock_guard<CMutex> lock(this->_mutex);
-        this->_inFlight.push_back(id);
+        this->_inFlight.insert(id);
     }
 
     // Everything the callback needs is copied into the lambda. The incoming span is not

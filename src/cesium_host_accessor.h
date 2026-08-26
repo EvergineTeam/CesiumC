@@ -34,6 +34,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 /**
@@ -145,7 +146,7 @@ private:
 
     CesiumAssetAccessorCallbacks _callbacks;
     mutable CMutex _mutex;
-    std::vector<CesiumAssetRequestId> _inFlight;
+    std::unordered_set<CesiumAssetRequestId> _inFlight;
 };
 
 /**

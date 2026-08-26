@@ -89,11 +89,10 @@ public:
 
 class ThreadPoolTaskProcessor : public CTaskProcessor {
 public:
-    explicit ThreadPoolTaskProcessor(
-        unsigned int threadCount = std::thread::hardware_concurrency() - 1)
+    ThreadPoolTaskProcessor()
         : _queue(4096), _stop(false), _version(0) {
-        if (threadCount < 2)
-            threadCount = 2;
+        const unsigned int hardwareThreads = std::thread::hardware_concurrency();
+        const unsigned int threadCount = hardwareThreads > 2 ? hardwareThreads - 1 : 2;
         _workers.reserve(threadCount);
         for (unsigned int i = 0; i < threadCount; ++i)
             _workers.emplace_back(&ThreadPoolTaskProcessor::workerLoop, this);
