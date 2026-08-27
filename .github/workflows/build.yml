@@ -13,9 +13,10 @@ on:
     inputs:
       release-tag:
         description: >-
-          Publish a release at this tag with the nine libraries attached, e.g. v0.61.0.
-          Leave empty to build and test only. Use the cesium-native version this wrapper
-          targets, so the tag answers "which Cesium is this?" without chasing a submodule.
+          Publish a CesiumNativeC release at this tag with the nine libraries attached,
+          e.g. v0.63.0-cesiumc.1. Leave empty to build and test only. The prefix must match
+          the cesium-native version recorded in binding.yml; increment the final revision
+          for C-side releases that keep the same Cesium Native version.
         required: false
         type: string
         default: ''
@@ -1003,20 +1004,28 @@ jobs:
             exit 1
           fi
 
-      # The tag names the cesium-native release this wrapper targets, so it has to be the one
-      # the manifest records. A release tagged v0.63.0 built from a tree pinned at v0.61.0 is
-      # a lie that only shows up much later, in a consumer.
-      - name: Check the tag matches what the manifest records
+      - name: Read the Cesium Native version
+        id: release-metadata
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
         run: |
           set -euo pipefail
-          recorded=$(python3 -c "import yaml,sys; print(((yaml.safe_load(open('binding.yml',encoding='utf-8')).get('upstream') or {}).get('release') or {}).get('current') or '')")
-          echo "manifest records: $recorded"
-          echo "release tag:      ${{ inputs.release-tag }}"
-          if [ "$recorded" != "${{ inputs.release-tag }}" ]; then
-            echo "::error::binding.yml records $recorded but this release is tagged ${{ inputs.release-tag }}."
+          upstream_version=$(python3 -c "import yaml; print(((yaml.safe_load(open('binding.yml',encoding='utf-8')).get('upstream') or {}).get('release') or {}).get('current') or '')")
+          if [ -z "$upstream_version" ]; then
+            echo "::error::binding.yml does not record an upstream release version."
             exit 1
           fi
+
+          release_tag=$RELEASE_TAG
+          prefix="$upstream_version-cesiumc."
+          revision=${release_tag#"$prefix"}
+          if [[ "$release_tag" != "$prefix"* || ! "$revision" =~ ^[0-9]+$ ]]; then
+            echo "::error::release tag must match $prefix<revision> (for example, ${prefix}1)."
+            exit 1
+          fi
+
+          echo "upstream-version=$upstream_version" >> "$GITHUB_OUTPUT"
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2
@@ -1024,7 +1033,7 @@ jobs:
           tag_name: ${{ inputs.release-tag }}
           name: ${{ inputs.release-tag }}
           body: |
-            CesiumNativeC wrapping cesium-native `${{ inputs.release-tag }}`.
+            CesiumNativeC `${{ inputs.release-tag }}` wrapping cesium-native `${{ steps.release-metadata.outputs.upstream-version }}`.
 
             Nine archives, one per runtime identifier. Each contains
             `runtimes/<rid>/native/`, so unpacking it over a .NET binding repository puts the
