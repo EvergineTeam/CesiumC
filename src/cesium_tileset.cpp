@@ -16,6 +16,7 @@
 #include <Cesium3DTilesSelection/SampleHeightResult.h>
 #include <Cesium3DTilesSelection/ViewState.h>
 #include <Cesium3DTilesSelection/ViewUpdateResult.h>
+#include <CesiumRasterOverlays/RasterOverlay.h>
 #include "cesium_wrappers.h"
 
 #include <CesiumAsync/AsyncSystem.h>
@@ -78,9 +79,24 @@ template struct PrivateMemberAccess<
     TilesetContentManagerMember,
     &Cesium3DTilesSelection::Tileset::_pTilesetContentManager>;
 
-void unloadCachedBytes(Cesium3DTilesSelection::Tileset& tileset) {
+void trimMemory(Cesium3DTilesSelection::Tileset& tileset) {
     auto& pContentManager = tileset.*getMember(TilesetContentManagerMember{});
     pContentManager->unloadCachedBytes(0, 0.0);
+
+    auto& overlayCollection = pContentManager->getRasterOverlayCollection();
+    std::vector<CesiumUtility::IntrusivePointer<
+        const CesiumRasterOverlays::RasterOverlay>> overlays;
+    overlays.reserve(overlayCollection.getActivatedOverlays().size());
+    for (const auto& pActivated : overlayCollection.getActivatedOverlays()) {
+        overlays.emplace_back(&pActivated->getOverlay());
+    }
+
+    for (const auto& pOverlay : overlays) {
+        overlayCollection.remove(pOverlay);
+    }
+    for (const auto& pOverlay : overlays) {
+        overlayCollection.add(pOverlay);
+    }
 }
 
 } // namespace
@@ -253,7 +269,7 @@ CESIUM_API const CesiumViewUpdateResult* cesium_tileset_update_view(
 CESIUM_API void cesium_tileset_trim_memory(CesiumTileset* tileset) {
     if (!tileset) return;
     CESIUM_TRY_BEGIN
-    unloadCachedBytes(*asTileset(tileset)->pTileset);
+    trimMemory(*asTileset(tileset)->pTileset);
     CESIUM_TRY_END
 }
 

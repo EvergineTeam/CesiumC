@@ -1553,6 +1553,7 @@ static int test_raster_overlay_collection() {
        tileset holding nothing dangling -- which is why the tileset is destroyed after this
        rather than before. */
     cesium_raster_overlay_collection_add(collection, overlay);
+     cesium_tileset_trim_memory(tileset);
     cesium_raster_overlay_collection_remove(collection, overlay);
 
     cesium_tileset_destroy(tileset);
