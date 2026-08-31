@@ -6,6 +6,7 @@
 
 #include "cesium_internal.h"
 #include "cesium_renderer_resources.h"
+#include "TilesetContentManager.h"
 
 #include <cesium/cesium_tileset.h>
 
@@ -55,6 +56,34 @@ static const TilesetWrapper* asTileset(const CesiumTileset* h) {
 using Cesium3DTilesSelection::TilesetOptions;
 using Cesium3DTilesSelection::SampleHeightResult;
 using Cesium3DTilesSelection::ViewState;
+
+namespace {
+
+// Cesium Native exposes the unload operation on its internal content manager but not on
+// Tileset. Explicit template instantiation may name a private member; keep that access here
+// so the C wrapper can delegate to Cesium's eviction implementation without patching upstream.
+struct TilesetContentManagerMember {
+    using Type = CesiumUtility::IntrusivePointer<
+        Cesium3DTilesSelection::TilesetContentManager>
+        Cesium3DTilesSelection::Tileset::*;
+    friend Type getMember(TilesetContentManagerMember);
+};
+
+template<typename Tag, typename Tag::Type member>
+struct PrivateMemberAccess {
+    friend typename Tag::Type getMember(Tag) { return member; }
+};
+
+template struct PrivateMemberAccess<
+    TilesetContentManagerMember,
+    &Cesium3DTilesSelection::Tileset::_pTilesetContentManager>;
+
+void unloadCachedBytes(Cesium3DTilesSelection::Tileset& tileset) {
+    auto& pContentManager = tileset.*getMember(TilesetContentManagerMember{});
+    pContentManager->unloadCachedBytes(0, 0.0);
+}
+
+} // namespace
 
 static CesiumGeospatial::Cartographic toNativeCartographic(
     CesiumCartographic cartographic) {
@@ -224,14 +253,7 @@ CESIUM_API const CesiumViewUpdateResult* cesium_tileset_update_view(
 CESIUM_API void cesium_tileset_trim_memory(CesiumTileset* tileset) {
     if (!tileset) return;
     CESIUM_TRY_BEGIN
-    auto& options = asTileset(tileset)->pTileset->getOptions();
-    struct RestoreCacheLimit {
-        Cesium3DTilesSelection::TilesetOptions& options;
-        int64_t maximumCachedBytes;
-        ~RestoreCacheLimit() { options.maximumCachedBytes = maximumCachedBytes; }
-    } restore{options, options.maximumCachedBytes};
-    options.maximumCachedBytes = 0;
-    asTileset(tileset)->pTileset->loadTiles();
+    unloadCachedBytes(*asTileset(tileset)->pTileset);
     CESIUM_TRY_END
 }
 

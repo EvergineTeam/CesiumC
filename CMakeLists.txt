@@ -104,6 +104,9 @@ target_include_directories(CesiumNativeC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        # TrimMemory delegates to TilesetContentManager::unloadCachedBytes so it does not
+        # run Tileset::loadTiles and start queued work while trying to release memory.
+        ${CMAKE_CURRENT_SOURCE_DIR}/cesium-native/Cesium3DTilesSelection/src
 )
 
 target_compile_definitions(CesiumNativeC PRIVATE CESIUM_NATIVE_C_EXPORTS)

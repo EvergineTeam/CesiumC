@@ -1647,6 +1647,10 @@ static int test_tileset_from_url_render_content() {
         externals, "https://example.invalid/tileset.json", options);
     ASSERT_NOT_NULL(tileset);
 
+    /* Trimming delegates directly to the content manager and must be safe before the first
+       update, without processing the pending tileset request. */
+    cesium_tileset_trim_memory(tileset);
+
     /* Without a successful load there is no root tile. If one exists anyway, its content
        accessors have to agree with each other: claiming no render content and then handing
        back a model is the inconsistency that would strand a consumer. */
