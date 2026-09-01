@@ -146,6 +146,23 @@ else()
     target_compile_definitions(CesiumNativeC PRIVATE CESIUMC_NO_CURL)
 endif()
 
+# Google Play requires 64-bit native libraries to support 16 KB memory pages, and from
+# 1 February 2027 refuses updates that do not. Without this the linker aligns LOAD segments
+# to 4 KB and the shipped libCesiumNativeC.so reads back as p_align 0x1000 -- which is what
+# it did, because the runner's NDK is r27c and 16 KB alignment only became the default in
+# r28.
+#
+# Here rather than in the workflow's extra-cmake, for two reasons. Anyone building this
+# locally gets the same binary CI does. And -DCMAKE_SHARED_LINKER_FLAGS= replaces the
+# variable rather than appending to it, so the first other flag anyone needs would silently
+# drop this one.
+#
+# Only the final link needs it: arm64-android-release sets VCPKG_LIBRARY_LINKAGE static, so
+# the thirty dependencies are archives, and an archive has no program headers to align.
+if(ANDROID)
+    target_link_options(CesiumNativeC PRIVATE "-Wl,-z,max-page-size=16384")
+endif()
+
 # On Windows, place the DLL in a predictable output directory.
 set_target_properties(CesiumNativeC PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
