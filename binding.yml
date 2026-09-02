@@ -29,7 +29,7 @@ upstream:
     # The cost, since it is not free: with `stable` the upstream author decides what counts
     # as newest, and here we decide by parsing version strings. Needs toolbox >= 1.25.0.
     track: tags
-    current: v0.63.0
+    current: v0.64.0
 
   # report-only. Moving this pointer is not a mechanical edit: there is no generator, so a
   # C++ API change becomes a compile error that somebody -- or cpp-wrapper-porter -- has to
