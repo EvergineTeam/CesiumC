@@ -61,7 +61,12 @@ safe-outputs:
     allowed-labels: [agent:needs-regen, agent:upstream-break, agent:needs-human]
     deduplicate-by-title: true
     max: 1
-source: EvergineTeam/Evergine.Bindings@1d83f977f1348e18faaae4d173c9d61fccfe3d76
+  # gh-aw otherwise files every `noop` in a standing "[aw] No-Op Runs" issue per
+  # repository. A flake that healed on re-run, or a failure already on file, is the
+  # right outcome and not one worth an issue that a real failure has to compete with.
+  noop:
+    report-as-issue: false
+source: EvergineTeam/Evergine.Bindings@4c15efde1d1789d14befc9e2b5ca711a0aba1c4c
 ---
 
 # CI Doctor
