@@ -35,9 +35,9 @@ extern "C" {
  * ========================================================================= */
 
 #define CESIUMC_CESIUM_NATIVE_VERSION_MAJOR 0
-#define CESIUMC_CESIUM_NATIVE_VERSION_MINOR 63
+#define CESIUMC_CESIUM_NATIVE_VERSION_MINOR 66
 #define CESIUMC_CESIUM_NATIVE_VERSION_PATCH 0
-#define CESIUMC_CESIUM_NATIVE_VERSION "0.63.0"
+#define CESIUMC_CESIUM_NATIVE_VERSION "0.66.0"
 
 /* ============================================================================
  * Error handling
